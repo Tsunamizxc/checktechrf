@@ -235,7 +235,7 @@ async function showAdmin() {
     const data = await api("/api/admin/feed");
     const blocks = [
       el("h1", { text: "Кабинет администратора" }),
-      el("p", { class: "lead", text: "Последние заявки и заказы пользователей. Нажмите строку, чтобы открыть результат." }),
+      el("p", { class: "lead", text: "Заявки с сайта и из бота. Нажмите строку, чтобы открыть данные и результат." }),
       el("h2", { text: "Заявки и заказы" }),
     ];
     if (!data.orders?.length) {
@@ -245,9 +245,10 @@ async function showAdmin() {
       for (const item of data.orders) {
         const result = String(item.result || "").split("\n")[0];
         const short = result.length > 90 ? `${result.slice(0, 90)}…` : result;
+        const source = item.source === "site" ? "Сайт" : "Бот";
         const button = el("button", { class: "service", type: "button" }, [
           el("strong", { text: item.title || "Заявка" }),
-          el("small", { text: [formatWhen(item.createdAt), item.customer, STATUS_LABEL[item.status] || "", short || item.query].filter(Boolean).join(" · ") }),
+          el("small", { text: [source, formatWhen(item.createdAt), item.customer, STATUS_LABEL[item.status] || "", short || item.query].filter(Boolean).join(" · ") }),
         ]);
         button.addEventListener("click", () => openAdminItem(item));
         list.append(button);
@@ -287,6 +288,7 @@ async function openAdminItem(item) {
 
 function showAdminResult(order) {
   const blocks = [el("h1", { text: order.title || "Заявка" })];
+  blocks.push(el("p", { class: "note", text: order.source === "site" ? "Источник: сайт" : "Источник: бот" }));
   if (order.customer) blocks.push(el("p", { class: "lead", text: order.customer }));
   if (order.contact) blocks.push(el("p", { class: "note", text: order.contact }));
   if (order.message) blocks.push(el("p", { class: "lead", text: order.message }));

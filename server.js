@@ -260,9 +260,12 @@ function cardSummary(cards) {
 }
 
 function operationQuery(order) {
+  const fields = order.fields || {};
+  if (order.service === "site") {
+    return fields["Телефон"] || fields["VIN"] || fields["Госномер"] || fields["Город"] || fields["Имя"] || "";
+  }
   if (order.service === "check") return order.query || "";
   if (order.service === "dublikat") return order.dkNumber || "";
-  const fields = order.fields || {};
   if (order.service === "dkp") {
     return [fields.vehicle_make, fields.vehicle_model, fields.vehicle_vin].filter(Boolean).join(" ");
   }
@@ -270,6 +273,7 @@ function operationQuery(order) {
 }
 
 function operationResult(order) {
+  if (order.service === "site" || order.source === "site") return "Заявка с сайта.";
   if (order.service === "check" && order.status === "paid") {
     return cardSummary(order.cards) || (order.free ? "Результат открыт." : "Результат открыт после оплаты.");
   }
@@ -339,17 +343,30 @@ function personLine(parts) {
   return parts.filter(Boolean).join(" · ");
 }
 
+function labeledFields(fields) {
+  return Object.entries(fields || {})
+    .map(([key, value]) => {
+      const text = String(value || "").trim();
+      return text ? `${key}: ${text}` : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
 function customerOf(order, profiles) {
   const profile = profiles[String(order.chatId || "")] || {};
   const fields = order.fields || {};
   const username = String(order.username || profile.username || "").replace(/^@/, "");
-  const name = profile.name || fields.name || "";
+  const name = profile.name || fields.name || fields["Имя"] || "";
+  const phone = fields.phone || fields["Телефон"] || "";
+  const email = fields.email || fields["Email"] || order.email || "";
   const customer = personLine([
     name,
     username ? `@${username}` : "",
-    !name && !username && order.chatId ? `Telegram ${order.chatId}` : "",
-  ]) || "Гость без Telegram";
-  const contact = personLine([fields.phone, order.email && order.email !== fields.phone ? order.email : ""]);
+    !name && !username && phone ? phone : "",
+    !name && !username && !phone && order.chatId ? `Telegram ${order.chatId}` : "",
+  ]) || (order.service === "site" ? "Заявка с сайта" : "Гость без Telegram");
+  const contact = personLine([phone, email && email !== phone ? email : ""]);
   return { customer, contact };
 }
 
@@ -409,7 +426,8 @@ function adminFeed() {
     rows.push({
       kind: "order",
       id: order.id,
-      title: SERVICE_TITLES[order.service] || "Заявка",
+      source: order.service === "site" || order.source === "site" ? "site" : "bot",
+      title: order.service === "site" ? order.subject || "Заявка с сайта" : SERVICE_TITLES[order.service] || "Заявка",
       status: order.status,
       createdAt: order.createdAt || 0,
       customer: who.customer,
@@ -422,6 +440,7 @@ function adminFeed() {
     rows.push({
       kind: "entry",
       id: item.id,
+      source: "bot",
       title: item.title || SERVICE_TITLES[item.type] || "Операция",
       status: item.status,
       createdAt: item.createdAt || 0,
@@ -435,7 +454,7 @@ function adminFeed() {
     });
   }
   rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
-  return { orders: rows.slice(0, 40), admins: adminPeople(profiles) };
+  return { orders: rows.slice(0, 80), admins: adminPeople(profiles) };
 }
 
 async function handleApi(req, res, url) {
@@ -480,11 +499,14 @@ async function handleApi(req, res, url) {
     }
     const view = present(order) || { id: order.id, service: order.service, status: order.status };
     const who = customerOf(order, userProfiles());
-    view.title = SERVICE_TITLES[order.service] || "Заявка";
+    const fromSite = order.service === "site" || order.source === "site";
+    view.source = fromSite ? "site" : "bot";
+    view.title = fromSite ? order.subject || "Заявка с сайта" : SERVICE_TITLES[order.service] || "Заявка";
     view.customer = who.customer;
     view.contact = who.contact;
     if (!view.cards?.length) view.message = view.message || operationResult(order);
-    if (order.fields && order.status === "sent") view.summary = leadText(order.service, order.fields);
+    if (fromSite) view.summary = labeledFields(order.fields);
+    else if (order.fields && order.status === "sent") view.summary = leadText(order.service, order.fields);
     send(res, 200, view);
     return;
   }
@@ -503,6 +525,7 @@ async function handleApi(req, res, url) {
       service: item.type,
       status: item.status === "paid" ? "paid" : "sent",
       title: item.title || SERVICE_TITLES[item.type] || "Операция",
+      source: "bot",
       customer: personLine([
         item.name,
         username ? `@${username}` : "",
@@ -988,12 +1011,29 @@ async function handleApi(req, res, url) {
       return;
     }
     const body = await readBody(req);
-    const fields = body.fields && typeof body.fields === "object" ? body.fields : {};
-    const lines = [clip(body.subject, 180) || "Заявка с сайта", "Источник: сайт"];
-    for (const [label, value] of Object.entries(fields)) {
+    const fields = {};
+    const rawFields = body.fields && typeof body.fields === "object" ? body.fields : {};
+    for (const [label, value] of Object.entries(rawFields).slice(0, 40)) {
+      const key = clip(label, 80);
       const text = clip(value, 500);
-      if (text) lines.push(`${clip(label, 80)}: ${text}`);
+      if (key && text) fields[key] = text;
     }
+    const subject = clip(body.subject, 180) || "Заявка с сайта";
+    const order = {
+      id: id("st"),
+      service: "site",
+      source: "site",
+      status: "sent",
+      amount: 0,
+      subject,
+      fields,
+      createdAt: Date.now(),
+    };
+    await update((data) => {
+      data.orders[order.id] = order;
+    });
+    const lines = [subject, "Источник: сайт"];
+    for (const [label, value] of Object.entries(fields)) lines.push(`${label}: ${value}`);
     await deliver(lines.join("\n"), "Заявка с сайта", { mail: false, vk: false });
     send(res, 200, { ok: true });
     return;
