@@ -118,16 +118,16 @@ function el(tag, attrs, children) {
 }
 
 function field([name, label, type, required]) {
-  const input = el(type === "textarea" ? "textarea" : "input", {
-    id: name,
-    name,
-    type: type === "textarea" ? null : type || "text",
-    required: required ? "required" : null,
-    autocomplete: name === "email" ? "email" : "off",
-    rows: type === "textarea" ? "3" : null,
-  });
+  const input = document.createElement(type === "textarea" ? "textarea" : "input");
+  input.name = name;
+  input.id = `${name}-${Math.random().toString(36).slice(2, 8)}`;
+  if (type === "textarea") input.rows = 3;
+  else input.type = type || "text";
+  if (required) input.required = true;
+  input.autocomplete = name === "email" ? "email" : "off";
+  if (name === "email") input.inputMode = "email";
   if (name === "phone") input.placeholder = "+7";
-  if (name === "contract_date" && !input.value) {
+  if (name === "contract_date") {
     const now = new Date();
     const day = String(now.getDate()).padStart(2, "0");
     const month = String(now.getMonth() + 1).padStart(2, "0");
@@ -137,9 +137,13 @@ function field([name, label, type, required]) {
 }
 
 function formValues(form) {
+  if (document.activeElement && form.contains(document.activeElement)) {
+    document.activeElement.blur();
+  }
   const data = {};
-  new FormData(form).forEach((value, key) => {
-    data[key] = String(value).trim();
+  form.querySelectorAll("input, textarea, select").forEach((input) => {
+    if (!input.name || input.type === "checkbox" || input.type === "button" || input.type === "submit") return;
+    data[input.name] = String(input.value || "").trim();
   });
   return data;
 }
@@ -399,17 +403,25 @@ function showCheck(catalog) {
         return;
       }
       const pay = el("button", { class: "primary", type: "button", text: `Открыть результат за ${price} ₽` });
+      const receipt = form.querySelector('input[name="email"]');
+      if (receipt && data.email) receipt.value = data.email;
       pay.addEventListener("click", async () => {
+        const email = String(receipt?.value || data.email || "").trim();
+        status.replaceChildren(el("p", { class: "lead", text: result.message }), pay);
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          status.append(banner("bad", "Укажите email для чека в поле выше."));
+          return;
+        }
         pay.disabled = true;
         try {
           const order = await api("/api/pay", {
             service: "check",
             lookupId: result.lookupId,
-            email: data.email,
+            email,
           });
           showPayment(order);
         } catch (error) {
-          status.append(banner("bad", error.message));
+          status.replaceChildren(el("p", { class: "lead", text: result.message }), pay, banner("bad", error.message));
           pay.disabled = false;
         }
       });

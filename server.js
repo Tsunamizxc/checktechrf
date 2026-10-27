@@ -85,7 +85,8 @@ function clip(value, max) {
 }
 
 function emailOk(value) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  const text = String(value || "").trim().replace(/\s+/g, "");
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text);
 }
 
 function actor(req) {
@@ -463,7 +464,7 @@ async function handleApi(req, res, url) {
     const prices = catalog();
     try {
       if (body.service === "check") {
-        const email = clip(body.email, 120);
+        const email = clip(body.email, 120).replace(/\s+/g, "");
         if (!emailOk(email)) {
           send(res, 400, { error: "Укажите email для чека." });
           return;
