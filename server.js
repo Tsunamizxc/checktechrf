@@ -173,7 +173,7 @@ async function createPayment(order, itemName) {
 }
 
 function leadText(service, fields) {
-  const names = { kasko: "КАСКО", osago: "ОСАГО", check: "Проверка техосмотра" };
+  const names = { kasko: "КАСКО", osago: "ОСАГО", check: "Проверка техосмотра", dkp: "ДКП" };
   const labels = {
     name: "Имя",
     phone: "Телефон",
@@ -181,6 +181,21 @@ function leadText(service, fields) {
     model: "Модель",
     city: "Город",
     query: "VIN или госномер",
+    email: "Email",
+    vehicle_make: "Марка ТС",
+    vehicle_model: "Модель ТС",
+    vehicle_year: "Год",
+    vehicle_vin: "VIN",
+    vehicle_plate: "Госномер",
+    vehicle_price: "Стоимость ТС",
+    seller_name: "Продавец",
+    seller_passport: "Паспорт продавца",
+    seller_address: "Адрес продавца",
+    buyer_name: "Покупатель",
+    buyer_passport: "Паспорт покупателя",
+    buyer_address: "Адрес покупателя",
+    contract_date: "Дата договора",
+    contract_place: "Место составления",
   };
   const lines = [`Заявка: ${names[service] || service}`];
   for (const [key, label] of Object.entries(labels)) {
@@ -287,26 +302,45 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/lead") {
     const body = await readBody(req);
-    const service = body.service === "osago" || body.service === "check" ? body.service : "kasko";
+    const allowed = ["kasko", "osago", "check", "dkp"];
+    const service = allowed.includes(body.service) ? body.service : "kasko";
     const fields = {
-      name: clip(body.name, 80),
+      name: clip(body.name, 150),
       phone: clip(body.phone, 20),
-      brand: clip(body.brand, 40),
-      model: clip(body.model, 40),
+      brand: clip(body.brand, 80),
+      model: clip(body.model, 80),
       city: clip(body.city, 80),
       query: clip(body.query, 20),
+      email: clip(body.email, 120),
+      vehicle_make: clip(body.vehicle_make, 80),
+      vehicle_model: clip(body.vehicle_model, 80),
+      vehicle_year: clip(body.vehicle_year, 4),
+      vehicle_vin: clip(body.vehicle_vin, 17),
+      vehicle_plate: clip(body.vehicle_plate, 12),
+      vehicle_price: clip(body.vehicle_price, 12),
+      seller_name: clip(body.seller_name, 150),
+      seller_passport: clip(body.seller_passport, 20),
+      seller_address: clip(body.seller_address, 250),
+      buyer_name: clip(body.buyer_name, 150),
+      buyer_passport: clip(body.buyer_passport, 20),
+      buyer_address: clip(body.buyer_address, 250),
+      contract_date: clip(body.contract_date, 10),
+      contract_place: clip(body.contract_place, 150),
     };
-    if (service === "check") {
-      if (fields.query.length < 6) {
-        send(res, 400, { error: "Укажите VIN или госномер." });
-        return;
-      }
-      if (fields.phone.length < 6) {
-        send(res, 400, { error: "Укажите телефон, чтобы мы могли ответить." });
-        return;
-      }
-    } else if (!fields.name || fields.phone.length < 6) {
+    if (fields.phone.length < 6) {
+      send(res, 400, { error: "Укажите телефон, чтобы мы могли ответить." });
+      return;
+    }
+    if (service === "check" && fields.query.length < 6) {
+      send(res, 400, { error: "Укажите VIN или госномер." });
+      return;
+    }
+    if (service !== "check" && service !== "dkp" && !fields.name) {
       send(res, 400, { error: "Укажите имя и телефон." });
+      return;
+    }
+    if (service === "dkp" && (!fields.vehicle_make || !fields.seller_name || !fields.buyer_name)) {
+      send(res, 400, { error: "Укажите марку, продавца и покупателя." });
       return;
     }
 
@@ -324,9 +358,12 @@ async function handleApi(req, res, url) {
       prune(data);
       data.orders[order.id] = order;
     });
-    const text = leadText(service, fields);
-    await deliver(`${text}\nИсточник: бот`, "Заявка в боте");
-    await notify(order.chatId, `${text}\n\nЗаявку приняли.`);
+    const from = user
+      ? `Telegram: ${[user.name, user.username ? `@${user.username}` : "", user.id].filter(Boolean).join(" ")}`
+      : "";
+    const text = [leadText(service, fields), from, "Источник: бот"].filter(Boolean).join("\n");
+    await deliver(text, "Заявка в боте");
+    await notify(order.chatId, "Заявку приняли. Администратор свяжется с вами.");
     send(res, 200, present(order));
     return;
   }
@@ -370,75 +407,7 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/pay") {
-    const body = await readBody(req);
-    const user = actor(req);
-    const prices = catalog();
-
-    try {
-      if (body.service === "check") {
-        const email = clip(body.email, 120);
-        if (!emailOk(email)) {
-          send(res, 400, { error: "Укажите email для чека." });
-          return;
-        }
-        const lookupId = clip(body.lookupId, 40);
-        const order = {
-          id: id("tg"),
-          service: "check",
-          status: "pending",
-          amount: prices.checkPrice,
-          email,
-          lookupId,
-          cards: [],
-          chatId: user?.id || null,
-          createdAt: Date.now(),
-        };
-        const saved = await update((data) => {
-          const found = data.lookups[lookupId];
-          if (!found) return null;
-          order.cards = found.cards || [];
-          order.query = found.query || "";
-          data.orders[order.id] = order;
-          return order;
-        });
-        if (!saved) {
-          send(res, 404, { error: "Результат проверки устарел. Проверьте номер ещё раз." });
-          return;
-        }
-        await createPayment(saved, "Проверка диагностической карты");
-        await update((data) => {
-          data.orders[saved.id] = saved;
-        });
-        send(res, 200, present(saved));
-        return;
-      }
-
-      if (body.service === "dkp") {
-        const fields = readFields(body);
-        validate(fields);
-        const order = {
-          id: id("tg"),
-          service: "dkp",
-          status: "pending",
-          amount: prices.dkpPrice,
-          email: fields.email,
-          fields,
-          chatId: user?.id || null,
-          createdAt: Date.now(),
-        };
-        await createPayment(order, "Договор купли-продажи ТС");
-        await update((data) => {
-          prune(data);
-          data.orders[order.id] = order;
-        });
-        send(res, 200, present(order));
-        return;
-      }
-
-      send(res, 400, { error: "Эта услуга оформляется заявкой, без предоплаты." });
-    } catch (error) {
-      fail(res, error);
-    }
+    send(res, 400, { error: "Оплата в боте отключена. Оставьте заявку — администратор свяжется с вами." });
     return;
   }
 

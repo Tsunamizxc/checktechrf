@@ -35,17 +35,18 @@ const forms = {
   },
   check: {
     title: "Проверка техосмотра",
-    lead: "Введите VIN или госномер. Если запись найдена, результат открывается после оплаты. Если записи нет — платить не нужно.",
-    submit: "Проверить",
+    lead: "Оставьте VIN или госномер и телефон. Заявку получит администратор и свяжется с вами.",
+    submit: "Оставить заявку",
     fields: [
+      ["name", "Имя", "text", false],
+      ["phone", "Телефон", "tel", true],
       ["query", "VIN или госномер", "text", true],
-      ["phone", "Телефон", "tel", false],
     ],
   },
   dkp: {
     title: "Договор купли-продажи",
-    lead: "Заполните данные, оплатите — бланк можно сразу распечатать в трёх экземплярах.",
-    submit: "Оплатить и получить договор",
+    lead: "Заполните данные договора и оставьте телефон. Заявку получит администратор.",
+    submit: "Оставить заявку",
     groups: [
       ["Транспорт", [
         ["vehicle_make", "Марка", "text", true],
@@ -66,9 +67,10 @@ const forms = {
         ["buyer_address", "Адрес", "text", true],
       ]],
       ["Договор", [
+        ["phone", "Телефон", "tel", true],
         ["contract_place", "Город составления", "text", true],
         ["contract_date", "Дата", "text", true],
-        ["email", "Email для чека", "email", true],
+        ["email", "Email", "email", false],
       ]],
     ],
   },
@@ -119,14 +121,19 @@ function formValues(form) {
 }
 
 async function api(path, body) {
-  const response = await fetch(path, {
-    method: body ? "POST" : "GET",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Telegram-Init-Data": tg?.initData || "",
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      method: body ? "POST" : "GET",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Telegram-Init-Data": tg?.initData || "",
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (error) {
+    throw new Error("Нет связи с сервером. Попробуйте ещё раз.");
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const error = new Error(data.error || "Не получилось выполнить запрос.");
@@ -201,24 +208,15 @@ function home(catalog) {
 
 function showForm(catalog, serviceId) {
   const spec = forms[serviceId];
-  const manualCheck = serviceId === "check" && !catalog.checkEnabled;
   const status = el("div");
   const groups = spec.groups
     ? spec.groups.map(([title, items]) => el("div", { class: "group" }, [el("h2", { text: title }), ...items.map(field)]))
     : spec.fields.map(field);
   const consent = el("input", { type: "checkbox", required: "required" });
-  const submit = el("button", {
-    class: "primary",
-    type: "submit",
-    text: manualCheck ? "Оставить заявку" : spec.submit,
-  });
-  if (serviceId === "dkp" && !catalog.payment) {
-    submit.disabled = true;
-    status.append(banner("bad", "Оплата не настроена: в .env нет данных Т-Банка."));
-  }
+  const submit = el("button", { class: "primary", type: "submit", text: spec.submit });
   const form = el("form", {}, [
     ...groups,
-    el("label", { class: "consent" }, [consent, "Согласен на обработку данных для заявки и оплаты."]),
+    el("label", { class: "consent" }, [consent, "Согласен на обработку данных для заявки."]),
     status,
     submit,
   ]);
@@ -229,27 +227,11 @@ function showForm(catalog, serviceId) {
     submit.disabled = true;
     const data = formValues(form);
     try {
-      if (serviceId === "check" && catalog.checkEnabled) {
-        const result = await api("/api/check", { query: data.query });
-        if (!result.found) {
-          status.append(banner("ok", result.message));
-          submit.disabled = false;
-          return;
-        }
-        askCheckPayment(catalog, result, data.phone);
-        return;
-      }
-      if (serviceId === "check") {
-        const lead = await api("/api/lead", { service: "check", query: data.query, phone: data.phone, name: userName });
-        showResult(lead);
-        return;
-      }
-      if (serviceId === "dkp") {
-        const order = await api("/api/pay", { service: "dkp", ...data });
-        showPayment(order);
-        return;
-      }
-      const lead = await api("/api/lead", { service: serviceId, ...data, name: data.name || userName });
+      const lead = await api("/api/lead", {
+        service: serviceId,
+        ...data,
+        name: data.name || data.seller_name || userName,
+      });
       showResult(lead);
     } catch (error) {
       if (error.manual) {
@@ -261,47 +243,9 @@ function showForm(catalog, serviceId) {
     }
   });
 
-  if (manualCheck) {
-    const phone = form.querySelector("[name=phone]");
-    if (phone) phone.required = true;
-  }
-  const lead = manualCheck
-    ? "Автопроверка не подключена. Оставьте VIN или госномер и телефон — оператор проверит и ответит."
-    : spec.lead;
+  const lead = spec.lead;
   shell(
     el("section", { class: "sheet panel" }, [el("h1", { text: spec.title }), el("p", { class: "lead", text: lead }), form]),
-    true
-  );
-}
-
-function askCheckPayment(catalog, result, phone) {
-  const email = el("input", { type: "email", required: "required", placeholder: "email для чека" });
-  const status = el("div");
-  const pay = el("button", { class: "primary", type: "button", text: `Открыть результат за ${result.price} ₽` });
-  pay.addEventListener("click", async () => {
-    status.replaceChildren();
-    pay.disabled = true;
-    try {
-      const order = await api("/api/pay", {
-        service: "check",
-        lookupId: result.lookupId,
-        email: email.value.trim(),
-        phone,
-      });
-      showPayment(order);
-    } catch (error) {
-      status.append(banner("bad", error.message));
-      pay.disabled = false;
-    }
-  });
-  shell(
-    el("section", { class: "sheet panel" }, [
-      el("h1", { text: "Данные найдены" }),
-      el("p", { class: "lead", text: result.message }),
-      el("label", {}, ["Email для чека *", email]),
-      status,
-      pay,
-    ]),
     true
   );
 }
@@ -351,9 +295,7 @@ function cardView(card) {
 function showResult(order) {
   const blocks = [el("h1", { text: order.status === "paid" ? "Готово" : "Заявка отправлена" })];
   if (order.message) blocks.push(el("p", { class: "lead", text: order.message }));
-  if (order.service === "check") {
-    blocks.push(order.cards?.length ? el("div", { class: "card-list" }, order.cards.map(cardView)) : banner("ok", "Оплата прошла. Если карточки нет, напишите в бот номер заказа."));
-  }
+  if (order.cards?.length) blocks.push(el("div", { class: "card-list" }, order.cards.map(cardView)));
   if (order.contract) {
     blocks.push(el("iframe", { class: "frame", title: "Договор", src: `/api/order/${order.id}/contract` }));
     const print = el("button", { class: "ghost", type: "button", text: "Печать" });
