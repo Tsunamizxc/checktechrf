@@ -1,6 +1,7 @@
 const { helpCommand } = require("../commands/help");
 const { startCommand } = require("../commands/start");
 const { addOperator, adminUsernames } = require("../lib/operator");
+const { confirmLogin, validCode } = require("../lib/site-login");
 const { chatIdOf } = require("./text");
 
 async function notifyCommand(bot, msg) {
@@ -23,8 +24,30 @@ const commandHandlers = new Map([
 
 const buttonHandlers = new Map([["Помощь", helpCommand]]);
 
+async function promptSiteLogin(bot, msg, code) {
+  const chatId = chatIdOf(msg);
+  if (!validCode(code)) {
+    await bot.sendMessage(chatId, "Ссылка для входа устарела. Откройте вход на сайте ещё раз.");
+    return;
+  }
+  await bot.sendMessage(
+    chatId,
+    "Подтвердите вход на сайт проверка-техосмотра.рф этим аккаунтом Telegram. После кнопки вернитесь в браузер — кабинет откроется сам.",
+    {
+      reply_markup: {
+        inline_keyboard: [[{ text: "Подтвердить вход", callback_data: `login:${code}` }]],
+      },
+    }
+  );
+}
+
 async function handleMessage(bot, msg) {
   const text = msg.text || "";
+  const payload = text.startsWith("/start") ? text.trim().split(/\s+/).slice(1).join(" ") : "";
+  if (payload.startsWith("login_")) {
+    await promptSiteLogin(bot, msg, payload.slice("login_".length));
+    return;
+  }
   const command = text.split("@")[0];
   const handler = commandHandlers.get(command) || buttonHandlers.get(text);
   const registered = rememberAdmin(msg);

@@ -148,16 +148,17 @@ function formValues(form) {
   return data;
 }
 
-async function api(path, body) {
+async function api(path, body, method) {
+  const verb = method || (body ? "POST" : "GET");
   let response;
   try {
     response = await fetch(path, {
-      method: body ? "POST" : "GET",
+      method: verb,
       headers: {
         "Content-Type": "application/json",
         "X-Telegram-Init-Data": tg?.initData || "",
       },
-      body: body ? JSON.stringify(body) : undefined,
+      body: verb === "POST" ? JSON.stringify(body || {}) : undefined,
     });
   } catch (error) {
     throw new Error("Нет связи с сервером. Попробуйте ещё раз.");
@@ -251,7 +252,9 @@ async function showCabinet() {
           el("small", { text: [formatWhen(item.createdAt), STATUS_LABEL[item.status] || "", item.query].filter(Boolean).join(" · ") }),
         ]);
         button.addEventListener("click", () => openHistory(item.id));
-        list.append(button);
+        const remove = el("button", { class: "danger", type: "button", text: "Удалить" });
+        remove.addEventListener("click", () => removeHistory(item.id, remove));
+        list.append(el("div", { class: "history-row" }, [button, remove]));
       }
       blocks.push(list);
     }
@@ -269,6 +272,18 @@ async function showCabinet() {
     shell(el("section", { class: "sheet panel" }, blocks), true);
   } catch (error) {
     status.replaceChildren(banner("bad", error.message));
+  }
+}
+
+async function removeHistory(id, button) {
+  if (!window.confirm("Удалить эту операцию из истории?")) return;
+  if (button) button.disabled = true;
+  try {
+    await api(`/api/history/${id}`, null, "DELETE");
+    await showCabinet();
+  } catch (error) {
+    if (button) button.disabled = false;
+    window.alert(error.message);
   }
 }
 
@@ -668,6 +683,11 @@ function showResult(order, fromCabinet) {
   }
   if (order.dkPdf) {
     blocks.push(el("a", { class: "primary", href: `/api/order/${order.id}/dk-pdf`, text: "Скачать дубликат PDF" }));
+  }
+  if (fromCabinet && order.historyId) {
+    const remove = el("button", { class: "ghost", type: "button", text: "Удалить из истории" });
+    remove.addEventListener("click", () => removeHistory(order.historyId, remove));
+    blocks.push(remove);
   }
   const back = el("button", { class: "primary", type: "button", text: fromCabinet ? "В кабинет" : "К услугам" });
   back.addEventListener("click", () => (fromCabinet ? showCabinet() : goServices()));

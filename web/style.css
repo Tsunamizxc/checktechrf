@@ -176,6 +176,25 @@ input {
   color: var(--blue-dark);
 }
 
+.history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  border-bottom: 1px solid var(--line);
+}
+
+.history-row .service { border-bottom: 0; }
+
+.danger {
+  border: 0;
+  background: #fff;
+  color: #9b2c2c;
+  padding: 0 0.95rem;
+  font: inherit;
+}
+
+.danger:disabled { opacity: 0.55; }
+
 .note, .banner {
   border-radius: 12px;
   padding: 0.8rem 0.9rem;

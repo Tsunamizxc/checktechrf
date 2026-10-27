@@ -13,7 +13,8 @@ const { userFromInitData } = require("./lib/telegram");
 const { isAdminUser } = require("./lib/operator");
 const { contractPdf } = require("./lib/pdf");
 const { scheduleFulfillment, pollDuplicates } = require("./lib/fulfill");
-const { rememberOperation, listHistory, findHistory } = require("./lib/history");
+const { rememberOperation, forgetOperation, listHistory, findHistory } = require("./lib/history");
+const { confirmLogin, takeLogin } = require("./lib/site-login");
 
 const ROOT = path.join(__dirname, "web");
 const PORT = Number(process.env.PORT || 8791);
@@ -420,19 +421,36 @@ async function handleApi(req, res, url) {
       if (order && String(order.chatId) === String(user.id)) {
         const view = present(order);
         view.title = item.title;
-  if (!view.message) view.message = view.cards?.length ? "Результат проверки." : item.result;
+        view.historyId = item.id;
+        if (!view.message) view.message = view.cards?.length ? "Результат проверки." : item.result;
         send(res, 200, view);
         return;
       }
     }
     send(res, 200, {
       id: item.id,
+      historyId: item.id,
       service: item.type,
       status: item.status === "paid" ? "paid" : "sent",
       title: item.title,
       message: item.cards?.length && item.status === "paid" ? "Результат проверки." : item.result,
       cards: item.status === "paid" ? item.cards || [] : [],
     });
+    return;
+  }
+
+  if (req.method === "DELETE" && historyMatch) {
+    const user = actor(req);
+    if (!user?.id) {
+      send(res, 401, { error: "Откройте кабинет из Telegram." });
+      return;
+    }
+    const removed = await forgetOperation(user.id, historyMatch[1]);
+    if (!removed) {
+      send(res, 404, { error: "Операция не найдена." });
+      return;
+    }
+    send(res, 200, { ok: true });
     return;
   }
 
@@ -772,6 +790,32 @@ async function handleApi(req, res, url) {
     } catch (error) {
       fail(res, error);
     }
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/telegram-login/status") {
+    if (!notifySecretOk(req)) {
+      send(res, 403, { error: "Нет доступа." });
+      return;
+    }
+    const body = await readBody(req);
+    const session = await takeLogin(clip(body.code, 64));
+    if (!session) {
+      send(res, 200, { ready: false });
+      return;
+    }
+    send(res, 200, { ready: true, ...session });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/history/delete") {
+    if (!notifySecretOk(req)) {
+      send(res, 403, { error: "Нет доступа." });
+      return;
+    }
+    const body = await readBody(req);
+    await forgetOperation(body.telegramId, clip(body.entryId, 80), { silent: true });
+    send(res, 200, { ok: true });
     return;
   }
 

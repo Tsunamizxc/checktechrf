@@ -5,6 +5,7 @@ const { handleMessage } = require("./functions/handleMessage");
 const { startServer } = require("./server");
 const { setNotifier, setDocumentSender } = require("./lib/notify");
 const { addOperator, adminUsernames } = require("./lib/operator");
+const { confirmLogin } = require("./lib/site-login");
 
 require("dotenv").config();
 
@@ -85,6 +86,33 @@ function startBot(botToken) {
       await handleMessage(bot, msg);
     } catch (error) {
       console.log(error);
+    }
+  });
+
+  bot.on("callback_query", async (query) => {
+    try {
+      const data = String(query.data || "");
+      if (!data.startsWith("login:")) {
+        await bot.answerCallbackQuery(query.id);
+        return;
+      }
+      const from = query.from || {};
+      const ok = await confirmLogin(data.slice("login:".length), {
+        id: from.id,
+        username: from.username || "",
+        name: [from.first_name, from.last_name].filter(Boolean).join(" "),
+      });
+      await bot.answerCallbackQuery(query.id, { text: ok ? "Вход подтверждён" : "Ссылка устарела" });
+      if (ok && query.message?.chat?.id) {
+        await bot.sendMessage(query.message.chat.id, "Вход на сайт подтверждён. Вернитесь в браузер — кабинет откроется сам.");
+      }
+    } catch (error) {
+      console.log(error);
+      try {
+        await bot.answerCallbackQuery(query.id);
+      } catch (answerError) {
+        console.log(answerError.message);
+      }
     }
   });
 
