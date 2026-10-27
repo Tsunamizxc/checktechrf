@@ -3,7 +3,7 @@ const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { catalog, formatPrice } = require("./lib/catalog");
-const { update, id, prune } = require("./lib/orders");
+const { update, id, prune, read } = require("./lib/orders");
 const { lookup } = require("./lib/check");
 const { readFields, validate, html } = require("./lib/contract");
 const { initPayment, getState, isPaid, notificationValid, configured } = require("./lib/tinkoff");
@@ -13,6 +13,7 @@ const { userFromInitData } = require("./lib/telegram");
 const { isAdminUser } = require("./lib/operator");
 const { contractPdf } = require("./lib/pdf");
 const { scheduleFulfillment, pollDuplicates } = require("./lib/fulfill");
+const { rememberOperation, listHistory, findHistory } = require("./lib/history");
 
 const ROOT = path.join(__dirname, "web");
 const PORT = Number(process.env.PORT || 8791);
@@ -124,6 +125,7 @@ function present(order) {
       : order.free
         ? "PDF готовится от 5 до 30 минут и придёт в чат бота."
         : "Оплата прошла. PDF готовится от 5 до 30 минут и придёт на email и в чат бота.";
+    if (order.fulfilled && fs.existsSync(dkFile(order.id))) view.dkPdf = true;
   }
   if (order.status === "sent") view.message = "Заявка отправлена. Мы свяжемся с вами.";
   return view;
@@ -160,6 +162,7 @@ async function rememberPaid(order) {
   const text = lines.filter(Boolean).join("\n");
   await deliver(text, "Оплата в боте");
   await notify(order.chatId, text);
+  await trackOrder(null, order);
 }
 
 async function markFromBank(order, result) {
@@ -232,6 +235,84 @@ function leadText(service, fields) {
     if (fields[key]) lines.push(`${label}: ${fields[key]}`);
   }
   return lines.join("\n");
+}
+
+function dkFile(orderId) {
+  return path.join(__dirname, "data", "pdfs", `${orderId}.pdf`);
+}
+
+function cardSummary(cards) {
+  return (cards || [])
+    .map((card) =>
+      [
+        card.dkNumber ? `Карта ${card.dkNumber}` : "",
+        [card.mark, card.model].filter(Boolean).join(" "),
+        card.licencePlate ? `Госномер ${card.licencePlate}` : "",
+        card.vin ? `VIN ${card.vin}` : "",
+        card.validity ? `до ${card.validity}` : "",
+      ]
+        .filter(Boolean)
+        .join(", ")
+    )
+    .filter(Boolean)
+    .join("\n");
+}
+
+function operationQuery(order) {
+  if (order.service === "check") return order.query || "";
+  if (order.service === "dublikat") return order.dkNumber || "";
+  const fields = order.fields || {};
+  if (order.service === "dkp") {
+    return [fields.vehicle_make, fields.vehicle_model, fields.vehicle_vin].filter(Boolean).join(" ");
+  }
+  return fields.query || [fields.brand, fields.model].filter(Boolean).join(" ") || fields.phone || "";
+}
+
+function operationResult(order) {
+  if (order.service === "check" && order.status === "paid") {
+    return cardSummary(order.cards) || (order.free ? "Результат открыт." : "Результат открыт после оплаты.");
+  }
+  if (order.service === "dkp" && order.status === "paid") {
+    return order.free ? "PDF договора готов. Его можно скачать снова." : "Оплата прошла. PDF договора можно скачать снова.";
+  }
+  if (order.service === "dublikat" && order.status === "paid") {
+    return order.fulfilled ? "PDF дубликата готов и отправлен в чат." : "PDF готовится и придёт в чат.";
+  }
+  if (order.status === "pending") return "Ожидает оплаты. Результат откроется после неё.";
+  if (order.status === "sent") return "Заявка отправлена.";
+  return "";
+}
+
+async function trackOrder(user, order, options) {
+  const userId = user?.id || order?.chatId;
+  if (!userId || !order) return;
+  const titles = {
+    check: "Проверка техосмотра",
+    dkp: "Договор купли-продажи",
+    dublikat: "Дубликат ДК",
+    kasko: "КАСКО",
+    osago: "ОСАГО",
+    tehosmotr: "Запись на техосмотр",
+  };
+  try {
+    await rememberOperation(
+      { id: userId, username: user?.username || order.username || "", name: user?.name || "" },
+      {
+        orderId: order.id,
+        type: order.service,
+        title: titles[order.service] || "Операция",
+        query: operationQuery(order),
+        result: operationResult(order),
+        status: order.status,
+        paid: order.status === "paid" && !order.free,
+        cards: order.status === "paid" && order.service === "check" ? order.cards : [],
+        createdAt: order.createdAt,
+      },
+      options
+    );
+  } catch (error) {
+    console.log("История:", error.message);
+  }
 }
 
 function grantFree(order) {
@@ -312,7 +393,50 @@ async function handleApi(req, res, url) {
     return;
   }
 
-  const orderMatch = url.pathname.match(/^\/api\/order\/([a-z0-9]+)(\/contract|\/pdf|\/sync)?$/);
+  if (req.method === "GET" && url.pathname === "/api/history") {
+    const user = actor(req);
+    if (!user?.id) {
+      send(res, 200, { items: [], guest: true });
+      return;
+    }
+    send(res, 200, { items: listHistory(user.id) });
+    return;
+  }
+
+  const historyMatch = url.pathname.match(/^\/api\/history\/([a-z0-9]+)$/);
+  if (req.method === "GET" && historyMatch) {
+    const user = actor(req);
+    if (!user?.id) {
+      send(res, 401, { error: "Откройте кабинет из Telegram." });
+      return;
+    }
+    const item = findHistory(user.id, historyMatch[1]);
+    if (!item) {
+      send(res, 404, { error: "Операция не найдена." });
+      return;
+    }
+    if (item.orderId) {
+      const order = await update((data) => data.orders[item.orderId] || null);
+      if (order && String(order.chatId) === String(user.id)) {
+        const view = present(order);
+        view.title = item.title;
+  if (!view.message) view.message = view.cards?.length ? "Результат проверки." : item.result;
+        send(res, 200, view);
+        return;
+      }
+    }
+    send(res, 200, {
+      id: item.id,
+      service: item.type,
+      status: item.status === "paid" ? "paid" : "sent",
+      title: item.title,
+      message: item.cards?.length && item.status === "paid" ? "Результат проверки." : item.result,
+      cards: item.status === "paid" ? item.cards || [] : [],
+    });
+    return;
+  }
+
+  const orderMatch = url.pathname.match(/^\/api\/order\/([a-z0-9]+)(\/contract|\/pdf|\/dk-pdf|\/sync)?$/);
   if (orderMatch) {
     const [, orderId, action] = orderMatch;
     if (req.method === "GET" && action === "/contract") {
@@ -322,6 +446,22 @@ async function handleApi(req, res, url) {
         return;
       }
       send(res, 200, html(order.fields), "text/html; charset=utf-8");
+      return;
+    }
+
+    if (req.method === "GET" && action === "/dk-pdf") {
+      const order = await update((data) => data.orders[orderId] || null);
+      const file = dkFile(orderId);
+      if (!order || order.status !== "paid" || order.service !== "dublikat" || !fs.existsSync(file)) {
+        send(res, 404, "PDF появится, когда дубликат будет готов.");
+        return;
+      }
+      res.writeHead(200, {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="dk-${order.id}.pdf"`,
+        "Cache-Control": "no-store",
+      });
+      res.end(fs.readFileSync(file));
       return;
     }
 
@@ -427,12 +567,14 @@ async function handleApi(req, res, url) {
       amount: 0,
       fields,
       chatId: user?.id || null,
+      username: clip(user?.username, 64).replace(/^@/, ""),
       createdAt: Date.now(),
     };
     await update((data) => {
       prune(data);
       data.orders[order.id] = order;
     });
+    await trackOrder(user, order);
     const from = user
       ? `Telegram: ${[user.name, user.username ? `@${user.username}` : "", user.id].filter(Boolean).join(" ")}`
       : "";
@@ -454,10 +596,27 @@ async function handleApi(req, res, url) {
     try {
       const result = await lookup(body.query);
       if (!result.found) {
+        await rememberOperation(user, {
+          type: "check",
+          title: "Проверка техосмотра",
+          query: result.query || clip(body.query, 20),
+          result: "Данные не найдены. Оплата не нужна.",
+          status: "empty",
+          paid: false,
+        });
         send(res, 200, { found: false, message: "Данные не найдены. Оплата не нужна." });
         return;
       }
       if (admin) {
+        await rememberOperation(user, {
+          type: "check",
+          title: "Проверка техосмотра",
+          query: result.query || clip(body.query, 20),
+          result: cardSummary(result.cards) || "Данные найдены.",
+          status: "paid",
+          paid: false,
+          cards: result.cards,
+        });
         send(res, 200, {
           found: true,
           free: true,
@@ -514,6 +673,7 @@ async function handleApi(req, res, url) {
           lookupId,
           cards: [],
           chatId: user?.id || null,
+          username: clip(user?.username, 64).replace(/^@/, ""),
           createdAt: Date.now(),
         };
         const saved = await update((data) => {
@@ -533,6 +693,7 @@ async function handleApi(req, res, url) {
         await update((data) => {
           data.orders[saved.id] = saved;
         });
+        await trackOrder(user, saved);
         send(res, 200, present(saved));
         return;
       }
@@ -549,6 +710,7 @@ async function handleApi(req, res, url) {
           email: fields.email,
           fields,
           chatId: user?.id || null,
+          username: clip(user?.username, 64).replace(/^@/, ""),
           createdAt: Date.now(),
         };
         if (admin) grantFree(order);
@@ -557,6 +719,7 @@ async function handleApi(req, res, url) {
           prune(data);
           data.orders[order.id] = order;
         });
+        await trackOrder(user, order);
         if (admin) scheduleFulfillment(order);
         send(res, 200, present(order));
         return;
@@ -590,6 +753,7 @@ async function handleApi(req, res, url) {
           email,
           dkNumber,
           chatId: user?.id || null,
+          username: clip(user?.username, 64).replace(/^@/, ""),
           createdAt: Date.now(),
         };
         if (admin) grantFree(order);
@@ -598,6 +762,7 @@ async function handleApi(req, res, url) {
           prune(data);
           data.orders[order.id] = order;
         });
+        await trackOrder(user, order);
         if (admin) scheduleFulfillment(order);
         send(res, 200, present(order));
         return;
@@ -628,6 +793,16 @@ async function handleApi(req, res, url) {
   }
 
   send(res, 404, { error: "Не найдено." });
+}
+
+async function importHistory() {
+  const orders = Object.values(read().orders || {}).filter(
+    (order) => order && order.chatId && ["paid", "sent", "pending"].includes(order.status)
+  );
+  orders.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+  for (const order of orders) {
+    await trackOrder(null, order, { silent: true });
+  }
 }
 
 function startServer() {
@@ -668,6 +843,7 @@ function startServer() {
 
   server.listen(PORT, () => {
     console.log(`Страница: http://127.0.0.1:${PORT}`);
+    importHistory().catch((error) => console.log("История:", error.message));
   });
   setInterval(() => {
     pollDuplicates().catch((error) => console.log(error.message));

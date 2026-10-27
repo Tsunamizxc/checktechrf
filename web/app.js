@@ -214,8 +214,86 @@ function banner(kind, text) {
   return el("div", { class: `banner ${kind}`, text });
 }
 
+function formatWhen(ts) {
+  const date = new Date(Number(ts) || 0);
+  if (!date.getTime()) return "";
+  return date.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+const STATUS_LABEL = {
+  paid: "Готово",
+  pending: "Ожидает оплаты",
+  sent: "Заявка отправлена",
+  empty: "Данные не найдены",
+};
+
+async function showCabinet() {
+  const status = el("p", { class: "note", text: "Загружаем историю…" });
+  shell(el("section", { class: "sheet panel" }, [el("h1", { text: "Личный кабинет" }), status]), true);
+  try {
+    const data = await api("/api/history");
+    const blocks = [
+      el("h1", { text: "Личный кабинет" }),
+      el("p", {
+        class: "lead",
+        text: "Здесь сохраняются проверки, договоры, дубликаты и заявки. Нажмите операцию, чтобы открыть результат.",
+      }),
+    ];
+    if (data.guest) {
+      blocks.push(banner("bad", "Откройте кабинет из Telegram, чтобы увидеть свои операции."));
+    } else if (!data.items?.length) {
+      blocks.push(el("p", { class: "note", text: "Операций пока нет. Они появятся после проверки, договора или заявки." }));
+    } else {
+      const list = el("div", { class: "sheet" });
+      for (const item of data.items) {
+        const button = el("button", { class: "service", type: "button" }, [
+          el("strong", { text: item.title || "Операция" }),
+          el("small", { text: [formatWhen(item.createdAt), STATUS_LABEL[item.status] || "", item.query].filter(Boolean).join(" · ") }),
+        ]);
+        button.addEventListener("click", () => openHistory(item.id));
+        list.append(button);
+      }
+      blocks.push(list);
+    }
+    const site = String(catalogCache?.siteUrl || "");
+    if (site.startsWith("https://")) {
+      const href = `${site.replace(/\/$/, "")}/lichnyy-kabinet/?tab=history`;
+      const link = el("a", { class: "site", href, text: "История на сайте" });
+      link.addEventListener("click", (event) => {
+        if (!tg?.openLink) return;
+        event.preventDefault();
+        tg.openLink(href);
+      });
+      blocks.push(link);
+    }
+    shell(el("section", { class: "sheet panel" }, blocks), true);
+  } catch (error) {
+    status.replaceChildren(banner("bad", error.message));
+  }
+}
+
+async function openHistory(id) {
+  const status = el("p", { class: "note", text: "Открываем результат…" });
+  shell(el("section", { class: "sheet panel" }, [status]), true);
+  try {
+    const item = await api(`/api/history/${id}`);
+    if (item.paymentUrl && item.status === "pending") {
+      showPayment(item);
+      return;
+    }
+    showResult(item, true);
+  } catch (error) {
+    shell(el("section", { class: "sheet panel" }, [banner("bad", error.message)]), true);
+  }
+}
+
 function home(catalog) {
   catalogCache = catalog;
+  const cabinet = el("button", { class: "service", type: "button" }, [
+    el("strong", { text: "Личный кабинет" }),
+    el("small", { text: "История операций и прошлые результаты" }),
+  ]);
+  cabinet.addEventListener("click", () => showCabinet());
   const list = el(
     "div",
     { class: "sheet" },
@@ -229,7 +307,7 @@ function home(catalog) {
       return button;
     })
   );
-  const wrap = el("div", { class: "stack" }, [list]);
+  const wrap = el("div", { class: "stack" }, [cabinet, list]);
   if (String(catalog.siteUrl || "").startsWith("https://")) {
     const link = el("a", { class: "site", href: catalog.siteUrl, text: "Открыть сайт" });
     link.addEventListener("click", (event) => {
@@ -578,8 +656,8 @@ function cardView(card) {
   return el("article", {}, lines.map((line) => el("p", { text: line })));
 }
 
-function showResult(order) {
-  const blocks = [el("h1", { text: order.status === "paid" ? "Готово" : "Заявка отправлена" })];
+function showResult(order, fromCabinet) {
+  const blocks = [el("h1", { text: order.title || (order.status === "paid" ? "Готово" : "Заявка отправлена") })];
   if (order.message) blocks.push(el("p", { class: "lead", text: order.message }));
   if (order.cards?.length) blocks.push(el("div", { class: "card-list" }, order.cards.map(cardView)));
   if (order.contract) {
@@ -588,8 +666,11 @@ function showResult(order) {
   if (order.pdf) {
     blocks.push(el("a", { class: "primary", href: `/api/order/${order.id}/pdf`, text: "Скачать PDF" }));
   }
-  const back = el("button", { class: "primary", type: "button", text: "К услугам" });
-  back.addEventListener("click", goServices);
+  if (order.dkPdf) {
+    blocks.push(el("a", { class: "primary", href: `/api/order/${order.id}/dk-pdf`, text: "Скачать дубликат PDF" }));
+  }
+  const back = el("button", { class: "primary", type: "button", text: fromCabinet ? "В кабинет" : "К услугам" });
+  back.addEventListener("click", () => (fromCabinet ? showCabinet() : goServices()));
   blocks.push(back);
   shell(el("section", { class: "sheet panel" }, blocks), true);
 }
