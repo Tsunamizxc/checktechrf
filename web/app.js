@@ -228,6 +228,87 @@ const STATUS_LABEL = {
   empty: "Данные не найдены",
 };
 
+async function showAdmin() {
+  const status = el("p", { class: "note", text: "Загружаем заявки…" });
+  shell(el("section", { class: "sheet panel" }, [el("h1", { text: "Кабинет администратора" }), status]), true);
+  try {
+    const data = await api("/api/admin/feed");
+    const blocks = [
+      el("h1", { text: "Кабинет администратора" }),
+      el("p", { class: "lead", text: "Последние заявки и заказы пользователей. Нажмите строку, чтобы открыть результат." }),
+      el("h2", { text: "Заявки и заказы" }),
+    ];
+    if (!data.orders?.length) {
+      blocks.push(el("p", { class: "note", text: "Заявок пока нет." }));
+    } else {
+      const list = el("div", { class: "sheet" });
+      for (const item of data.orders) {
+        const result = String(item.result || "").split("\n")[0];
+        const short = result.length > 90 ? `${result.slice(0, 90)}…` : result;
+        const button = el("button", { class: "service", type: "button" }, [
+          el("strong", { text: item.title || "Заявка" }),
+          el("small", { text: [formatWhen(item.createdAt), item.customer, STATUS_LABEL[item.status] || "", short || item.query].filter(Boolean).join(" · ") }),
+        ]);
+        button.addEventListener("click", () => openAdminItem(item));
+        list.append(button);
+      }
+      blocks.push(list);
+    }
+    blocks.push(el("h2", { text: "Администраторы" }));
+    if (!data.admins?.length) {
+      blocks.push(el("p", { class: "note", text: "Список администраторов пуст." }));
+    } else {
+      const people = el("div", { class: "sheet" });
+      for (const person of data.admins) {
+        const username = person.username ? `@${String(person.username).replace(/^@/, "")}` : "";
+        people.append(el("div", { class: "service" }, [
+          el("strong", { text: username || person.name || (person.id ? `Telegram ${person.id}` : "Администратор") }),
+          el("small", { text: [person.name && username ? person.name : "", person.id ? `id ${person.id}` : "", person.via].filter(Boolean).join(" · ") }),
+        ]));
+      }
+      blocks.push(people);
+    }
+    shell(el("section", { class: "sheet panel" }, blocks), true);
+  } catch (error) {
+    status.replaceChildren(banner("bad", error.message));
+  }
+}
+
+async function openAdminItem(item) {
+  const status = el("p", { class: "note", text: "Открываем заявку…" });
+  shell(el("section", { class: "sheet panel" }, [status]), true);
+  try {
+    const order = await api(item.kind === "entry" ? `/api/admin/entry/${item.id}` : `/api/admin/order/${item.id}`);
+    showAdminResult(order);
+  } catch (error) {
+    shell(el("section", { class: "sheet panel" }, [banner("bad", error.message)]), true);
+  }
+}
+
+function showAdminResult(order) {
+  const blocks = [el("h1", { text: order.title || "Заявка" })];
+  if (order.customer) blocks.push(el("p", { class: "lead", text: order.customer }));
+  if (order.contact) blocks.push(el("p", { class: "note", text: order.contact }));
+  if (order.message) blocks.push(el("p", { class: "lead", text: order.message }));
+  if (order.summary) {
+    blocks.push(el("div", { class: "card-list" }, String(order.summary).split("\n").filter(Boolean).map((line) => el("p", { text: line }))));
+  }
+  if (order.cards?.length) blocks.push(el("div", { class: "card-list" }, order.cards.map(cardView)));
+  if (order.contract) {
+    blocks.push(el("iframe", { class: "frame", title: "Договор", src: `/api/order/${order.id}/contract` }));
+  }
+  if (order.pdf) {
+    blocks.push(el("a", { class: "primary", href: `/api/order/${order.id}/pdf`, text: "Скачать PDF" }));
+  }
+  if (order.dkPdf) {
+    blocks.push(el("a", { class: "primary", href: `/api/order/${order.id}/dk-pdf`, text: "Скачать дубликат PDF" }));
+  }
+  const back = el("button", { class: "primary", type: "button", text: "К заявкам" });
+  back.addEventListener("click", () => showAdmin());
+  blocks.push(back);
+  shell(el("section", { class: "sheet panel" }, blocks), true);
+}
+
 async function showCabinet() {
   const status = el("p", { class: "note", text: "Загружаем историю…" });
   shell(el("section", { class: "sheet panel" }, [el("h1", { text: "Личный кабинет" }), status]), true);
@@ -309,6 +390,15 @@ function home(catalog) {
     el("small", { text: "История операций и прошлые результаты" }),
   ]);
   cabinet.addEventListener("click", () => showCabinet());
+  const nodes = [cabinet];
+  if (catalog.admin) {
+    const adminButton = el("button", { class: "service", type: "button" }, [
+      el("strong", { text: "Кабинет администратора" }),
+      el("small", { text: "Заявки пользователей, результаты и список администраторов" }),
+    ]);
+    adminButton.addEventListener("click", () => showAdmin());
+    nodes.push(adminButton);
+  }
   const list = el(
     "div",
     { class: "sheet" },
@@ -322,7 +412,7 @@ function home(catalog) {
       return button;
     })
   );
-  const wrap = el("div", { class: "stack" }, [cabinet, list]);
+  const wrap = el("div", { class: "stack" }, [...nodes, list]);
   if (String(catalog.siteUrl || "").startsWith("https://")) {
     const link = el("a", { class: "site", href: catalog.siteUrl, text: "Открыть сайт" });
     link.addEventListener("click", (event) => {

@@ -10,10 +10,10 @@ const { initPayment, getState, isPaid, notificationValid, configured } = require
 const { notify } = require("./lib/notify");
 const { deliver } = require("./lib/deliver");
 const { userFromInitData } = require("./lib/telegram");
-const { isAdminUser } = require("./lib/operator");
+const { isAdminUser, adminUsernames, adminChatIds } = require("./lib/operator");
 const { contractPdf } = require("./lib/pdf");
 const { scheduleFulfillment, pollDuplicates } = require("./lib/fulfill");
-const { rememberOperation, forgetOperation, listHistory, findHistory } = require("./lib/history");
+const { rememberOperation, forgetOperation, listHistory, findHistory, userProfiles, recentEntries, findEntry } = require("./lib/history");
 const { confirmLogin, takeLogin } = require("./lib/site-login");
 
 const ROOT = path.join(__dirname, "web");
@@ -284,24 +284,25 @@ function operationResult(order) {
   return "";
 }
 
+const SERVICE_TITLES = {
+  check: "Проверка техосмотра",
+  dkp: "Договор купли-продажи",
+  dublikat: "Дубликат ДК",
+  kasko: "КАСКО",
+  osago: "ОСАГО",
+  tehosmotr: "Запись на техосмотр",
+};
+
 async function trackOrder(user, order, options) {
   const userId = user?.id || order?.chatId;
   if (!userId || !order) return;
-  const titles = {
-    check: "Проверка техосмотра",
-    dkp: "Договор купли-продажи",
-    dublikat: "Дубликат ДК",
-    kasko: "КАСКО",
-    osago: "ОСАГО",
-    tehosmotr: "Запись на техосмотр",
-  };
   try {
     await rememberOperation(
       { id: userId, username: user?.username || order.username || "", name: user?.name || "" },
       {
         orderId: order.id,
         type: order.service,
-        title: titles[order.service] || "Операция",
+        title: SERVICE_TITLES[order.service] || "Операция",
         query: operationQuery(order),
         result: operationResult(order),
         status: order.status,
@@ -323,6 +324,118 @@ function grantFree(order) {
   order.paidAt = Date.now();
   order.settled = true;
   return order;
+}
+
+function requireAdmin(req, res) {
+  const user = actor(req);
+  if (!isAdminUser(user)) {
+    send(res, 403, { error: "Кабинет администратора доступен только администраторам." });
+    return null;
+  }
+  return user;
+}
+
+function personLine(parts) {
+  return parts.filter(Boolean).join(" · ");
+}
+
+function customerOf(order, profiles) {
+  const profile = profiles[String(order.chatId || "")] || {};
+  const fields = order.fields || {};
+  const username = String(order.username || profile.username || "").replace(/^@/, "");
+  const name = profile.name || fields.name || "";
+  const customer = personLine([
+    name,
+    username ? `@${username}` : "",
+    !name && !username && order.chatId ? `Telegram ${order.chatId}` : "",
+  ]) || "Гость без Telegram";
+  const contact = personLine([fields.phone, order.email && order.email !== fields.phone ? order.email : ""]);
+  return { customer, contact };
+}
+
+function adminPeople(profiles) {
+  const rows = new Map();
+  const put = (key, person) => {
+    const current = rows.get(key);
+    if (!current) {
+      rows.set(key, person);
+      return;
+    }
+    current.name = current.name || person.name;
+    current.username = current.username || person.username;
+    current.id = current.id || person.id;
+    if (person.via && !current.via.includes(person.via)) current.via = `${current.via}, ${person.via}`;
+  };
+
+  for (const username of adminUsernames()) {
+    const found = Object.entries(profiles).find(([, profile]) => String(profile.username || "").toLowerCase() === username);
+    put(`user:${username}`, {
+      username,
+      id: found ? found[0] : "",
+      name: found ? found[1].name : "",
+      via: "назначен в настройках",
+    });
+  }
+
+  for (const id of adminChatIds()) {
+    const profile = profiles[String(id)] || {};
+    const username = String(profile.username || "").replace(/^@/, "").toLowerCase();
+    const key = username && adminUsernames().includes(username) ? `user:${username}` : `id:${id}`;
+    put(key, {
+      username: profile.username || "",
+      id: String(id),
+      name: profile.name || "",
+      via: "получает заявки",
+    });
+  }
+
+  return [...rows.values()];
+}
+
+function adminFeed() {
+  const profiles = userProfiles();
+  const orders = Object.values(read().orders || {});
+  for (const order of orders) {
+    if (!order.chatId) continue;
+    const id = String(order.chatId);
+    const profile = profiles[id] || { name: "", username: "" };
+    if (order.username && !profile.username) profile.username = String(order.username).replace(/^@/, "");
+    profiles[id] = profile;
+  }
+
+  const rows = [];
+  for (const order of orders) {
+    const who = customerOf(order, profiles);
+    rows.push({
+      kind: "order",
+      id: order.id,
+      title: SERVICE_TITLES[order.service] || "Заявка",
+      status: order.status,
+      createdAt: order.createdAt || 0,
+      customer: who.customer,
+      query: operationQuery(order),
+      result: operationResult(order),
+    });
+  }
+  for (const item of recentEntries(80)) {
+    const username = String(item.username || "").replace(/^@/, "");
+    rows.push({
+      kind: "entry",
+      id: item.id,
+      title: item.title || SERVICE_TITLES[item.type] || "Операция",
+      status: item.status,
+      createdAt: item.createdAt || 0,
+      customer: personLine([
+        item.name,
+        username ? `@${username}` : "",
+        !item.name && !username ? `Telegram ${item.userId}` : "",
+      ]) || "Гость",
+      query: item.query,
+      result: item.result,
+    });
+  }
+  rows.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+  return { orders: rows.slice(0, 40), admins: adminPeople(profiles) };
 }
 
 async function handleApi(req, res, url) {
@@ -347,6 +460,56 @@ async function handleApi(req, res, url) {
         rosstrahUuid: process.env.ROSSTRAH_UUID || "68ede178-b086-41d0-a899-361f104733ab",
         ekosmotrKey: process.env.EKOSMOTR_KEY || "T2vN9qW5mC1xR8yH4uP7jF3kL6zD0aM",
       },
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/admin/feed") {
+    if (!requireAdmin(req, res)) return;
+    send(res, 200, adminFeed());
+    return;
+  }
+
+  const adminOrderMatch = url.pathname.match(/^\/api\/admin\/order\/([a-z0-9]+)$/);
+  if (req.method === "GET" && adminOrderMatch) {
+    if (!requireAdmin(req, res)) return;
+    const order = await update((data) => data.orders[adminOrderMatch[1]] || null);
+    if (!order) {
+      send(res, 404, { error: "Заявка не найдена." });
+      return;
+    }
+    const view = present(order) || { id: order.id, service: order.service, status: order.status };
+    const who = customerOf(order, userProfiles());
+    view.title = SERVICE_TITLES[order.service] || "Заявка";
+    view.customer = who.customer;
+    view.contact = who.contact;
+    if (!view.cards?.length) view.message = view.message || operationResult(order);
+    if (order.fields && order.status === "sent") view.summary = leadText(order.service, order.fields);
+    send(res, 200, view);
+    return;
+  }
+
+  const adminEntryMatch = url.pathname.match(/^\/api\/admin\/entry\/([a-z0-9]+)$/);
+  if (req.method === "GET" && adminEntryMatch) {
+    if (!requireAdmin(req, res)) return;
+    const item = findEntry(adminEntryMatch[1]);
+    if (!item) {
+      send(res, 404, { error: "Операция не найдена." });
+      return;
+    }
+    const username = String(item.username || "").replace(/^@/, "");
+    send(res, 200, {
+      id: item.id,
+      service: item.type,
+      status: item.status === "paid" ? "paid" : "sent",
+      title: item.title || SERVICE_TITLES[item.type] || "Операция",
+      customer: personLine([
+        item.name,
+        username ? `@${username}` : "",
+        !item.name && !username ? `Telegram ${item.userId}` : "",
+      ]) || "Гость",
+      message: item.result,
+      cards: item.cards || [],
     });
     return;
   }
