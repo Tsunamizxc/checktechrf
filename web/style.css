@@ -186,10 +186,42 @@ input {
   background: #fff;
 }
 
+.site, a.primary, a.ghost {
+  text-decoration: none;
+}
+
+a.primary, a.ghost { display: block; text-align: center; }
+
 .site {
   display: inline-block;
   margin-top: 0.9rem;
   color: var(--blue);
+}
+
+main.wide { width: min(48rem, calc(100% - 1rem)); }
+
+.widget-host {
+  min-height: 36rem;
+  margin-bottom: 1rem;
+}
+
+.widget-host iframe {
+  width: 100% !important;
+  min-height: 36rem;
+  border: 0;
+}
+
+details.extra { color: var(--muted); }
+details.extra summary { cursor: pointer; margin-bottom: 0.7rem; }
+
+select, textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: #f8fbfe;
+  border-radius: 12px;
+  padding: 0.75rem 0.8rem;
+  font: inherit;
+  color: inherit;
 }
 
 h2 { font-size: 1rem; margin: 0.2rem 0; }

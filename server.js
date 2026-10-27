@@ -10,6 +10,8 @@ const { initPayment, getState, isPaid, notificationValid, configured } = require
 const { notify } = require("./lib/notify");
 const { deliver } = require("./lib/deliver");
 const { userFromInitData } = require("./lib/telegram");
+const { contractPdf } = require("./lib/pdf");
+const { scheduleFulfillment, pollDuplicates } = require("./lib/fulfill");
 
 const ROOT = path.join(__dirname, "web");
 const PORT = Number(process.env.PORT || 8791);
@@ -107,7 +109,16 @@ function present(order) {
   };
   if (order.status === "pending" && order.paymentUrl) view.paymentUrl = order.paymentUrl;
   if (order.status === "paid" && order.service === "check") view.cards = order.cards || [];
-  if (order.status === "paid" && order.service === "dkp") view.contract = true;
+  if (order.status === "paid" && order.service === "dkp") {
+    view.contract = true;
+    view.pdf = true;
+    view.message = "Оплата прошла. PDF договора можно скачать, он также придёт в чат бота.";
+  }
+  if (order.status === "paid" && order.service === "dublikat") {
+    view.message = order.fulfilled
+      ? "PDF дубликата отправлен на email и в чат бота."
+      : "Оплата прошла. PDF готовится от 5 до 30 минут и придёт на email и в чат бота.";
+  }
   if (order.status === "sent") view.message = "Заявка отправлена. Мы свяжемся с вами.";
   return view;
 }
@@ -115,7 +126,8 @@ function present(order) {
 async function rememberPaid(order) {
   const title = {
     check: "Проверка техосмотра оплачена.",
-    dkp: "Договор оплачен. Откройте бота — бланк можно распечатать.",
+    dkp: "Договор оплачен. PDF отправлен клиенту.",
+    dublikat: "Дубликат ДК оплачен. PDF готовится и придёт клиенту на email.",
   }[order.service] || "Оплата прошла.";
 
   const lines = [title, `Заказ ${order.id}`];
@@ -134,7 +146,10 @@ async function rememberPaid(order) {
     }
   }
   if (order.service === "dkp" && order.fields) {
-    lines.push(`${order.fields.vehicle_make} ${order.fields.vehicle_model}`.trim(), order.fields.email);
+    lines.push(`${order.fields.vehicle_make} ${order.fields.vehicle_model}`.trim(), order.fields.email, order.fields.phone);
+  }
+  if (order.service === "dublikat") {
+    lines.push(order.dkNumber ? `ДК ${order.dkNumber}` : "", order.email);
   }
   const text = lines.filter(Boolean).join("\n");
   await deliver(text, "Оплата в боте");
@@ -173,7 +188,14 @@ async function createPayment(order, itemName) {
 }
 
 function leadText(service, fields) {
-  const names = { kasko: "КАСКО", osago: "ОСАГО", check: "Проверка техосмотра", dkp: "ДКП" };
+  const names = {
+    kasko: "КАСКО",
+    osago: "ОСАГО",
+    check: "Проверка техосмотра",
+    dkp: "ДКП",
+    dublikat: "Дубликат ДК",
+    tehosmotr: "Запись на техосмотр",
+  };
   const labels = {
     name: "Имя",
     phone: "Телефон",
@@ -196,6 +218,8 @@ function leadText(service, fields) {
     buyer_address: "Адрес покупателя",
     contract_date: "Дата договора",
     contract_place: "Место составления",
+    dkNumber: "Номер ДК",
+    message: "Комментарий",
   };
   const lines = [`Заявка: ${names[service] || service}`];
   for (const [key, label] of Object.entries(labels)) {
@@ -212,6 +236,11 @@ async function handleApi(req, res, url) {
       payment: configured(),
       checkEnabled: Boolean(String(process.env.AUTO_API_KEY || "").trim()),
       siteUrl: process.env.SITE_URL || "",
+      widgets: {
+        rosstrahToken: process.env.ROSSTRAH_PARTNER_TOKEN || "KTpwUPyPXT8JcxvfUUbPKIJZC2jdKwtI",
+        rosstrahUuid: process.env.ROSSTRAH_UUID || "68ede178-b086-41d0-a899-361f104733ab",
+        ekosmotrKey: process.env.EKOSMOTR_KEY || "T2vN9qW5mC1xR8yH4uP7jF3kL6zD0aM",
+      },
     });
     return;
   }
@@ -251,12 +280,15 @@ async function handleApi(req, res, url) {
       delete order._justPaid;
       return { ...order };
     });
-    if (paidOrder) await rememberPaid(paidOrder);
+    if (paidOrder) {
+      await rememberPaid(paidOrder);
+      scheduleFulfillment(paidOrder);
+    }
     send(res, 200, "OK");
     return;
   }
 
-  const orderMatch = url.pathname.match(/^\/api\/order\/([a-z0-9]+)(\/contract|\/sync)?$/);
+  const orderMatch = url.pathname.match(/^\/api\/order\/([a-z0-9]+)(\/contract|\/pdf|\/sync)?$/);
   if (orderMatch) {
     const [, orderId, action] = orderMatch;
     if (req.method === "GET" && action === "/contract") {
@@ -266,6 +298,22 @@ async function handleApi(req, res, url) {
         return;
       }
       send(res, 200, html(order.fields), "text/html; charset=utf-8");
+      return;
+    }
+
+    if (req.method === "GET" && action === "/pdf") {
+      const order = await update((data) => data.orders[orderId] || null);
+      if (!order || order.status !== "paid" || order.service !== "dkp") {
+        send(res, 404, "PDF появится после оплаты.");
+        return;
+      }
+      const pdf = await contractPdf(order.fields);
+      res.writeHead(200, {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="dogovor-${order.id}.pdf"`,
+        "Cache-Control": "no-store",
+      });
+      res.end(pdf);
       return;
     }
 
@@ -285,6 +333,7 @@ async function handleApi(req, res, url) {
         send(res, 404, { error: "Заказ не найден." });
         return;
       }
+      if (order.status === "paid") scheduleFulfillment(order);
       send(res, 200, present(order));
       return;
     }
@@ -302,7 +351,7 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/lead") {
     const body = await readBody(req);
-    const allowed = ["kasko", "osago", "check", "dkp"];
+    const allowed = ["kasko", "osago", "check", "dkp", "dublikat", "tehosmotr"];
     const service = allowed.includes(body.service) ? body.service : "kasko";
     const fields = {
       name: clip(body.name, 150),
@@ -326,6 +375,8 @@ async function handleApi(req, res, url) {
       buyer_address: clip(body.buyer_address, 250),
       contract_date: clip(body.contract_date, 10),
       contract_place: clip(body.contract_place, 150),
+      dkNumber: clip(body.dkNumber, 20),
+      message: clip(body.message, 500),
     };
     if (fields.phone.length < 6) {
       send(res, 400, { error: "Укажите телефон, чтобы мы могли ответить." });
@@ -407,7 +458,104 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/pay") {
-    send(res, 400, { error: "Оплата в боте отключена. Оставьте заявку — администратор свяжется с вами." });
+    const body = await readBody(req);
+    const user = actor(req);
+    const prices = catalog();
+    try {
+      if (body.service === "check") {
+        const email = clip(body.email, 120);
+        if (!emailOk(email)) {
+          send(res, 400, { error: "Укажите email для чека." });
+          return;
+        }
+        const lookupId = clip(body.lookupId, 40);
+        const order = {
+          id: id("tg"),
+          service: "check",
+          status: "pending",
+          amount: prices.checkPrice,
+          email,
+          lookupId,
+          cards: [],
+          chatId: user?.id || null,
+          createdAt: Date.now(),
+        };
+        const saved = await update((data) => {
+          const found = data.lookups[lookupId];
+          if (!found) return null;
+          order.cards = found.cards || [];
+          order.query = found.query || "";
+          data.orders[order.id] = order;
+          return order;
+        });
+        if (!saved) {
+          send(res, 404, { error: "Результат проверки устарел. Проверьте номер ещё раз." });
+          return;
+        }
+        await createPayment(saved, "Проверка диагностической карты");
+        await update((data) => {
+          data.orders[saved.id] = saved;
+        });
+        send(res, 200, present(saved));
+        return;
+      }
+
+      if (body.service === "dkp") {
+        const fields = readFields(body);
+        validate(fields);
+        const order = {
+          id: id("tg"),
+          service: "dkp",
+          status: "pending",
+          amount: prices.dkpPrice,
+          email: fields.email,
+          fields,
+          chatId: user?.id || null,
+          createdAt: Date.now(),
+        };
+        await createPayment(order, "Договор купли-продажи ТС");
+        await update((data) => {
+          prune(data);
+          data.orders[order.id] = order;
+        });
+        send(res, 200, present(order));
+        return;
+      }
+
+      if (body.service === "dublikat") {
+        const email = clip(body.email, 120);
+        const dkNumber = clip(body.dkNumber, 20).replace(/\s+/g, "");
+        if (!emailOk(email)) {
+          send(res, 400, { error: "Укажите email, на который придёт PDF." });
+          return;
+        }
+        if (dkNumber.length < 5) {
+          send(res, 400, { error: "Укажите номер диагностической карты." });
+          return;
+        }
+        const order = {
+          id: id("tg"),
+          service: "dublikat",
+          status: "pending",
+          amount: prices.dkPrice,
+          email,
+          dkNumber,
+          chatId: user?.id || null,
+          createdAt: Date.now(),
+        };
+        await createPayment(order, "Дубликат диагностической карты");
+        await update((data) => {
+          prune(data);
+          data.orders[order.id] = order;
+        });
+        send(res, 200, present(order));
+        return;
+      }
+
+      send(res, 400, { error: "Эта услуга оформляется заявкой." });
+    } catch (error) {
+      fail(res, error);
+    }
     return;
   }
 
@@ -470,6 +618,9 @@ function startServer() {
   server.listen(PORT, () => {
     console.log(`Страница: http://127.0.0.1:${PORT}`);
   });
+  setInterval(() => {
+    pollDuplicates().catch((error) => console.log(error.message));
+  }, 60000);
   return server;
 }
 
