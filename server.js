@@ -10,6 +10,7 @@ const { initPayment, getState, isPaid, notificationValid, configured } = require
 const { notify } = require("./lib/notify");
 const { deliver } = require("./lib/deliver");
 const { userFromInitData } = require("./lib/telegram");
+const { isAdminUser } = require("./lib/operator");
 const { contractPdf } = require("./lib/pdf");
 const { scheduleFulfillment, pollDuplicates } = require("./lib/fulfill");
 
@@ -113,12 +114,16 @@ function present(order) {
   if (order.status === "paid" && order.service === "dkp") {
     view.contract = true;
     view.pdf = true;
-    view.message = "Оплата прошла. PDF договора можно скачать, он также придёт в чат бота.";
+    view.message = order.free
+      ? "PDF договора готов. Его можно скачать, файл также придёт в чат бота."
+      : "Оплата прошла. PDF договора можно скачать, он также придёт в чат бота.";
   }
   if (order.status === "paid" && order.service === "dublikat") {
     view.message = order.fulfilled
       ? "PDF дубликата отправлен на email и в чат бота."
-      : "Оплата прошла. PDF готовится от 5 до 30 минут и придёт на email и в чат бота.";
+      : order.free
+        ? "PDF готовится от 5 до 30 минут и придёт в чат бота."
+        : "Оплата прошла. PDF готовится от 5 до 30 минут и придёт на email и в чат бота.";
   }
   if (order.status === "sent") view.message = "Заявка отправлена. Мы свяжемся с вами.";
   return view;
@@ -229,11 +234,29 @@ function leadText(service, fields) {
   return lines.join("\n");
 }
 
+function grantFree(order) {
+  order.status = "paid";
+  order.amount = 0;
+  order.free = true;
+  order.paidAt = Date.now();
+  order.settled = true;
+  return order;
+}
+
 async function handleApi(req, res, url) {
   if (req.method === "GET" && url.pathname === "/api/catalog") {
     const data = catalog();
+    const admin = isAdminUser(actor(req));
+    if (admin) {
+      for (const service of data.services) {
+        if (service.id === "check" || service.id === "dublikat" || service.id === "dkp") {
+          service.priceLabel = "бесплатно";
+        }
+      }
+    }
     send(res, 200, {
       ...data,
+      admin,
       payment: configured(),
       checkEnabled: Boolean(String(process.env.AUTO_API_KEY || "").trim()),
       siteUrl: process.env.SITE_URL || "",
@@ -421,7 +444,9 @@ async function handleApi(req, res, url) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/check") {
-    if (tooMany(clientIp(req))) {
+    const user = actor(req);
+    const admin = isAdminUser(user);
+    if (!admin && tooMany(clientIp(req))) {
       send(res, 429, { error: "Слишком много проверок. Подождите минуту." });
       return;
     }
@@ -430,6 +455,15 @@ async function handleApi(req, res, url) {
       const result = await lookup(body.query);
       if (!result.found) {
         send(res, 200, { found: false, message: "Данные не найдены. Оплата не нужна." });
+        return;
+      }
+      if (admin) {
+        send(res, 200, {
+          found: true,
+          free: true,
+          cards: result.cards,
+          message: "Данные найдены. Для администратора результат бесплатный.",
+        });
         return;
       }
       const lookupId = id("lk");
@@ -464,8 +498,9 @@ async function handleApi(req, res, url) {
     const prices = catalog();
     try {
       if (body.service === "check") {
+        const admin = isAdminUser(user);
         const email = clip(body.email, 120).replace(/\s+/g, "");
-        if (!emailOk(email)) {
+        if (!admin && !emailOk(email)) {
           send(res, 400, { error: "Укажите email для чека." });
           return;
         }
@@ -493,7 +528,8 @@ async function handleApi(req, res, url) {
           send(res, 404, { error: "Результат проверки устарел. Проверьте номер ещё раз." });
           return;
         }
-        await createPayment(saved, "Проверка диагностической карты");
+        if (admin) grantFree(saved);
+        else await createPayment(saved, "Проверка диагностической карты");
         await update((data) => {
           data.orders[saved.id] = saved;
         });
@@ -502,8 +538,9 @@ async function handleApi(req, res, url) {
       }
 
       if (body.service === "dkp") {
+        const admin = isAdminUser(user);
         const fields = readFields(body);
-        validate(fields);
+        validate(fields, { skipEmail: admin });
         const order = {
           id: id("tg"),
           service: "dkp",
@@ -514,20 +551,31 @@ async function handleApi(req, res, url) {
           chatId: user?.id || null,
           createdAt: Date.now(),
         };
-        await createPayment(order, "Договор купли-продажи ТС");
+        if (admin) grantFree(order);
+        else await createPayment(order, "Договор купли-продажи ТС");
         await update((data) => {
           prune(data);
           data.orders[order.id] = order;
         });
+        if (admin) scheduleFulfillment(order);
         send(res, 200, present(order));
         return;
       }
 
       if (body.service === "dublikat") {
-        const email = clip(body.email, 120);
+        const admin = isAdminUser(user);
+        const email = clip(body.email, 120).replace(/\s+/g, "");
         const dkNumber = clip(body.dkNumber, 20).replace(/\s+/g, "");
-        if (!emailOk(email)) {
+        if (!admin && !emailOk(email)) {
           send(res, 400, { error: "Укажите email, на который придёт PDF." });
+          return;
+        }
+        if (email && !emailOk(email)) {
+          send(res, 400, { error: "Укажите корректный email." });
+          return;
+        }
+        if (admin && !email && !user?.id) {
+          send(res, 400, { error: "Укажите email или откройте бота из Telegram, чтобы получить PDF в чат." });
           return;
         }
         if (dkNumber.length < 5) {
@@ -544,11 +592,13 @@ async function handleApi(req, res, url) {
           chatId: user?.id || null,
           createdAt: Date.now(),
         };
-        await createPayment(order, "Дубликат диагностической карты");
+        if (admin) grantFree(order);
+        else await createPayment(order, "Дубликат диагностической карты");
         await update((data) => {
           prune(data);
           data.orders[order.id] = order;
         });
+        if (admin) scheduleFulfillment(order);
         send(res, 200, present(order));
         return;
       }

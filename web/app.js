@@ -229,7 +229,7 @@ function home(catalog) {
       return button;
     })
   );
-  const wrap = el("div", {}, [list]);
+  const wrap = el("div", { class: "stack" }, [list]);
   if (String(catalog.siteUrl || "").startsWith("https://")) {
     const link = el("a", { class: "site", href: catalog.siteUrl, text: "Открыть сайт" });
     link.addEventListener("click", (event) => {
@@ -253,8 +253,8 @@ function buildForm(serviceId, onSubmit) {
   const form = el("form", {}, [
     ...groups,
     el("label", { class: "consent" }, [consent, "Согласен на обработку данных."]),
-    status,
     submit,
+    status,
   ]);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -380,11 +380,11 @@ function showTehosmotr(catalog) {
 
 function showCheck(catalog) {
   const price = catalog.checkPrice || 30;
-  const status = el("div");
+  const status = el("div", { class: "stack" });
   const query = field(["query", "VIN или госномер", "text", true]);
-  const email = field(["email", "Email для чека", "email", true]);
+  const email = catalog.admin ? null : field(["email", "Email для чека", "email", true]);
   const submit = el("button", { class: "primary", type: "submit", text: "Проверить" });
-  const form = el("form", {}, [query, email, status, submit]);
+  const form = el("form", {}, [query, email, submit, status]);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     status.replaceChildren();
@@ -393,23 +393,33 @@ function showCheck(catalog) {
     try {
       const result = await api("/api/check", { query: data.query });
       if (!result.found) {
-        status.append(banner("ok", result.message));
+        status.replaceChildren(banner("ok", result.message));
+        submit.disabled = false;
+        return;
+      }
+      if (result.free || catalog.admin) {
+        status.replaceChildren(
+          banner("ok", result.message || "Для администратора результат бесплатный."),
+          result.cards?.length ? el("div", { class: "card-list" }, result.cards.map(cardView)) : null
+        );
         submit.disabled = false;
         return;
       }
       if (!catalog.payment) {
-        status.append(banner("ok", `${result.message} Оплата сейчас недоступна, оставьте заявку ниже.`));
+        status.replaceChildren(banner("ok", `${result.message} Оплата сейчас недоступна, оставьте заявку ниже.`));
         submit.disabled = false;
         return;
       }
       const pay = el("button", { class: "primary", type: "button", text: `Открыть результат за ${price} ₽` });
       const receipt = form.querySelector('input[name="email"]');
       if (receipt && data.email) receipt.value = data.email;
+      const showPay = (errorText) => {
+        status.replaceChildren(el("p", { class: "lead", text: result.message }), pay, errorText ? banner("bad", errorText) : null);
+      };
       pay.addEventListener("click", async () => {
-        const email = String(receipt?.value || data.email || "").trim();
-        status.replaceChildren(el("p", { class: "lead", text: result.message }), pay);
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-          status.append(banner("bad", "Укажите email для чека в поле выше."));
+        const emailValue = String(receipt?.value || data.email || "").trim();
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailValue)) {
+          showPay("Укажите email для чека в поле выше.");
           return;
         }
         pay.disabled = true;
@@ -417,25 +427,26 @@ function showCheck(catalog) {
           const order = await api("/api/pay", {
             service: "check",
             lookupId: result.lookupId,
-            email,
+            email: emailValue,
           });
-          showPayment(order);
+          if (order.status === "paid" && !order.paymentUrl) showResult(order);
+          else showPayment(order);
         } catch (error) {
-          status.replaceChildren(el("p", { class: "lead", text: result.message }), pay, banner("bad", error.message));
+          showPay(error.message);
           pay.disabled = false;
         }
       });
-      status.replaceChildren(el("p", { class: "lead", text: result.message }), pay);
+      showPay();
     } catch (error) {
-      status.append(banner("bad", error.message));
+      status.replaceChildren(banner("bad", error.message));
       submit.disabled = false;
     }
   });
   shell(
     el("section", { class: "sheet panel" }, [
       el("h1", { text: "Проверка техосмотра" }),
-      el("p", { class: "lead", text: forms.check.lead }),
-      catalog.payment ? null : banner("bad", "Оплата через Т-Банк сейчас не настроена. Можно оставить заявку."),
+      el("p", { class: "lead", text: catalog.admin ? "Для администратора проверка бесплатная: результат откроется сразу." : forms.check.lead }),
+      catalog.payment || catalog.admin ? null : banner("bad", "Оплата через Т-Банк сейчас не настроена. Можно оставить заявку."),
       form,
       leadFold("check"),
     ]),
@@ -446,17 +457,17 @@ function showCheck(catalog) {
 function showDublikat(catalog) {
   const price = catalog.dkPrice || 800;
   const dk = field(["dkNumber", "Номер ДК", "text", true]);
-  const email = field(["email", "Email для PDF", "email", true]);
-  const note = el("div");
+  const email = field(["email", catalog.admin ? "Email для копии" : "Email для PDF", "email", !catalog.admin]);
+  const note = el("div", { class: "stack" });
   const direct = el("form", {}, [
     dk,
     email,
+    el("button", { class: "primary", type: "submit", text: catalog.admin ? "Получить PDF" : `Оплатить ${price} ₽ и получить PDF` }),
     note,
-    el("button", { class: "primary", type: "submit", text: `Оплатить ${price} ₽ и получить PDF` }),
   ]);
   direct.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (!catalog.payment) {
+    if (!catalog.admin && !catalog.payment) {
       note.replaceChildren(banner("bad", "Оплата через Т-Банк сейчас не настроена."));
       return;
     }
@@ -465,7 +476,9 @@ function showDublikat(catalog) {
     note.replaceChildren();
     submit.disabled = true;
     try {
-      showPayment(await api("/api/pay", { service: "dublikat", dkNumber: data.dkNumber, email: data.email }));
+      const order = await api("/api/pay", { service: "dublikat", dkNumber: data.dkNumber, email: data.email });
+      if (order.paymentUrl) showPayment(order);
+      else showResult(order);
     } catch (error) {
       note.replaceChildren(banner("bad", error.message));
       submit.disabled = false;
@@ -474,7 +487,10 @@ function showDublikat(catalog) {
   shell(
     el("section", { class: "sheet panel" }, [
       el("h1", { text: "Дубликат ДК" }),
-      el("p", { class: "lead", text: forms.dublikat.lead }),
+      el("p", {
+        class: "lead",
+        text: catalog.admin ? "Для администратора дубликат готовится без оплаты и приходит в чат бота." : forms.dublikat.lead,
+      }),
       direct,
       leadFold("dublikat"),
     ]),
@@ -483,18 +499,32 @@ function showDublikat(catalog) {
 }
 
 function showDkp(catalog) {
+  if (catalog.admin) {
+    forms.dkp.submit = "Сформировать PDF";
+    forms.dkp.lead = "Для администратора договор формируется без оплаты.";
+    for (const [, items] of forms.dkp.groups) {
+      for (const item of items) {
+        if (item[0] === "email") {
+          item[1] = "Email для копии";
+          item[3] = false;
+        }
+      }
+    }
+  }
   const form = buildForm("dkp", async (data) => {
-    if (!catalog.payment) {
+    if (!catalog.admin && !catalog.payment) {
       showResult(await sendLead("dkp", data));
       return;
     }
-    showPayment(await api("/api/pay", { service: "dkp", ...data, name: data.seller_name || userName }));
+    const order = await api("/api/pay", { service: "dkp", ...data, name: data.seller_name || userName });
+    if (order.paymentUrl) showPayment(order);
+    else showResult(order);
   });
   shell(
     el("section", { class: "sheet panel" }, [
       el("h1", { text: forms.dkp.title }),
       el("p", { class: "lead", text: forms.dkp.lead }),
-      catalog.payment ? null : banner("bad", "Оплата не настроена: заявка уйдёт администратору без PDF."),
+      catalog.admin || catalog.payment ? null : banner("bad", "Оплата не настроена: заявка уйдёт администратору без PDF."),
       form,
     ]),
     true
