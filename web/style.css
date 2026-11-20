@@ -232,6 +232,33 @@ a.primary, a.ghost { display: block; text-align: center; }
   color: var(--blue);
 }
 
+.contacts {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.35rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #fff;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.contacts strong {
+  color: var(--ink);
+  font-size: 0.98rem;
+}
+
+.contacts p {
+  margin: 0;
+}
+
+.contact-link {
+  color: var(--blue);
+  text-decoration: none;
+  word-break: break-word;
+}
+
 main.wide { width: min(48rem, calc(100% - 1rem)); }
 
 .widget-host {

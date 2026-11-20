@@ -213,6 +213,49 @@ function goServices() {
   else boot(false);
 }
 
+function openExternal(url) {
+  if (!url) return;
+  if (tg?.openLink) tg.openLink(url);
+  else window.open(url, "_blank", "noopener");
+}
+
+function contactsFooter() {
+  const siteUrl = String(catalogCache?.siteUrl || "https://проверка-техосмотра.рф/").replace(/\/$/, "") || "https://проверка-техосмотра.рф";
+  const phone = el("a", { class: "contact-link", href: "tel:+79522078432", text: "8 (952) 207-84-32" });
+  phone.addEventListener("click", (event) => {
+    if (!tg?.openLink) return;
+    event.preventDefault();
+    tg.openLink("tel:+79522078432");
+  });
+  const messenger = el("a", { class: "contact-link", href: "https://t.me/+79522078432", text: "8 (952) 207-84-32" });
+  messenger.addEventListener("click", (event) => {
+    event.preventDefault();
+    openExternal("https://t.me/+79522078432");
+  });
+  const mail = el("a", { class: "contact-link", href: "mailto:proverkatexosmotra@yandex.ru", text: "proverkatexosmotra@yandex.ru" });
+  mail.addEventListener("click", (event) => {
+    if (!tg?.openLink) return;
+    event.preventDefault();
+    tg.openLink("mailto:proverkatexosmotra@yandex.ru");
+  });
+  const site = el("a", { class: "contact-link", href: siteUrl, text: "проверка-техосмотра.рф" });
+  site.addEventListener("click", (event) => {
+    event.preventDefault();
+    openExternal(siteUrl);
+  });
+  return el("footer", { class: "contacts" }, [
+    el("strong", { text: "Контакты" }),
+    el("p", {}, ["Телефон: ", phone]),
+    el("p", {}, ["WhatsApp / Telegram: ", messenger]),
+    el("p", {}, ["Email: ", mail]),
+    el("p", {}, [
+      "Сайт ",
+      site,
+      " — запись на техосмотр, ОСАГО и КАСКО, проверка и дубликат диагностической карты, договор купли-продажи, проверка ЭПТС, РНИС и пропуска МКАД. На сайте тот же личный кабинет и история операций.",
+    ]),
+  ]);
+}
+
 function shell(content, withBack, wide) {
   document.querySelector("main")?.classList.toggle("wide", Boolean(wide));
   const header = el("header", { class: "top" }, [
@@ -228,7 +271,7 @@ function shell(content, withBack, wide) {
     back.addEventListener("click", goServices);
     nodes.push(back);
   }
-  nodes.push(content);
+  nodes.push(content, contactsFooter());
   app.replaceChildren(...nodes);
 }
 
@@ -706,7 +749,7 @@ function showDublikat(catalog) {
 }
 
 function showPaidCheck(catalog, serviceId) {
-  const price = serviceId === "mkad" ? catalog.mkadPrice || 30 : catalog.eptsPrice || 30;
+  const price = serviceId === "mkad" ? catalog.mkadPrice || 300 : catalog.eptsPrice || 300;
   const spec = forms[serviceId];
   const status = el("div", { class: "stack" });
   const fields =
