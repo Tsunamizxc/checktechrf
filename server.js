@@ -176,6 +176,11 @@ async function rememberPaid(order) {
   await deliver(text, "Оплата в боте");
   await notify(order.chatId, text);
   await trackOrder(null, order);
+  await fromBotOrder(order, { id: order.chatId, username: order.username || "" }, {
+    event: "payment",
+    event_text: "Оплата в боте",
+    subject: title,
+  });
 }
 
 async function markFromBank(order, result) {
@@ -853,6 +858,25 @@ async function handleApi(req, res, url) {
           status: "empty",
           paid: false,
         });
+        await fromBotOrder(
+          {
+            id: id("ck"),
+            service: "check",
+            status: "empty",
+            amount: 0,
+            query: result.query || clip(body.query, 20),
+            chatId: user?.id || null,
+            username: clip(user?.username, 64).replace(/^@/, ""),
+            fields: {},
+          },
+          user,
+          {
+            event: "check_empty",
+            event_text: "Проверка техосмотра: не найдено",
+            summary: "Данные не найдены. Оплата не нужна.",
+            found: false,
+          }
+        );
         send(res, 200, { found: false, message: "Данные не найдены. Оплата не нужна." });
         return;
       }
@@ -866,6 +890,26 @@ async function handleApi(req, res, url) {
           paid: false,
           cards: result.cards,
         });
+        await fromBotOrder(
+          {
+            id: id("ck"),
+            service: "check",
+            status: "paid",
+            amount: 0,
+            query: result.query || clip(body.query, 20),
+            cards: result.cards,
+            chatId: user?.id || null,
+            username: clip(user?.username, 64).replace(/^@/, ""),
+            fields: {},
+          },
+          user,
+          {
+            event: "check_admin",
+            event_text: "Проверка техосмотра (админ)",
+            summary: cardSummary(result.cards) || "Данные найдены.",
+            found: true,
+          }
+        );
         send(res, 200, {
           found: true,
           free: true,
@@ -943,6 +987,11 @@ async function handleApi(req, res, url) {
           data.orders[saved.id] = saved;
         });
         await trackOrder(user, saved);
+        await fromBotOrder(saved, user, {
+          event: admin ? "check_admin" : "check_pay",
+          event_text: admin ? "Проверка техосмотра (админ)" : "Оплата проверки техосмотра",
+          summary: cardSummary(saved.cards),
+        });
         send(res, 200, present(saved));
         return;
       }
@@ -969,6 +1018,10 @@ async function handleApi(req, res, url) {
           data.orders[order.id] = order;
         });
         await trackOrder(user, order);
+        await fromBotOrder(order, user, {
+          event: admin ? "dkp_admin" : "dkp_pay",
+          event_text: admin ? "ДКП без оплаты" : "Оплата ДКП",
+        });
         if (admin) scheduleFulfillment(order);
         send(res, 200, present(order));
         return;
@@ -1012,6 +1065,10 @@ async function handleApi(req, res, url) {
           data.orders[order.id] = order;
         });
         await trackOrder(user, order);
+        await fromBotOrder(order, user, {
+          event: admin ? "dublikat_admin" : "dublikat_pay",
+          event_text: admin ? "Дубликат ДК без оплаты" : "Оплата дубликата ДК",
+        });
         if (admin) scheduleFulfillment(order);
         send(res, 200, present(order));
         return;
@@ -1069,6 +1126,10 @@ async function handleApi(req, res, url) {
           data.orders[order.id] = order;
         });
         await trackOrder(user, order);
+        await fromBotOrder(order, user, {
+          event: admin ? "api_check_admin" : "api_check_pay",
+          event_text: admin ? "Проверка администратора" : "Оплата проверки",
+        });
         if (admin) scheduleFulfillment(order);
         send(res, 200, present(order));
         return;
