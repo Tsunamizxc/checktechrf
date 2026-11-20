@@ -706,7 +706,7 @@ function showDublikat(catalog) {
 }
 
 function showPaidCheck(catalog, serviceId) {
-  const price = serviceId === "mkad" ? catalog.mkadPrice || 300 : catalog.eptsPrice || 300;
+  const price = serviceId === "mkad" ? catalog.mkadPrice || 30 : catalog.eptsPrice || 30;
   const spec = forms[serviceId];
   const status = el("div", { class: "stack" });
   const fields =
