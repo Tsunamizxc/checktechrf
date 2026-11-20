@@ -1181,7 +1181,21 @@ async function handleApi(req, res, url) {
       const text = clip(value, 500);
       if (key && text) fields[key] = text;
     }
-    const subject = clip(body.subject, 180) || "Заявка с сайта";
+    const pageUrl =
+      clip(body.page || body.page_url || body.site || fields["Страница"] || process.env.SITE_URL || "", 300) ||
+      "https://проверка-техосмотра.рф/";
+    let siteName = clip(body.site_name || fields["Сайт"] || "", 120);
+    if (!siteName) {
+      try {
+        const { domainToUnicode } = require("url");
+        siteName = domainToUnicode(new URL(pageUrl).hostname.replace(/^www\./i, ""));
+      } catch (error) {
+        siteName = "проверка-техосмотра.рф";
+      }
+    }
+    if (pageUrl && !fields["Страница"]) fields["Страница"] = pageUrl;
+    if (siteName && !fields["Сайт"]) fields["Сайт"] = siteName;
+    const subject = clip(body.subject, 180) || `Заявка с сайта · ${siteName}`;
     const order = {
       id: id("st"),
       service: "site",
@@ -1189,6 +1203,7 @@ async function handleApi(req, res, url) {
       status: "sent",
       amount: 0,
       subject,
+      pageUrl,
       fields,
       createdAt: Date.now(),
     };
@@ -1196,9 +1211,12 @@ async function handleApi(req, res, url) {
       data.orders[order.id] = order;
     });
     await fromSiteLead(order);
-    const lines = [subject, "Источник: сайт"];
-    for (const [label, value] of Object.entries(fields)) lines.push(`${label}: ${value}`);
-    await deliver(lines.join("\n"), "Заявка с сайта", { mail: false, vk: false });
+    const lines = [subject, `Источник: сайт · ${siteName}`, `Сайт: ${siteName}`, `Страница: ${pageUrl}`];
+    for (const [label, value] of Object.entries(fields)) {
+      if (label === "Страница" || label === "Сайт") continue;
+      lines.push(`${label}: ${value}`);
+    }
+    await deliver(lines.join("\n"), `Заявка с сайта · ${siteName}`, { mail: false, vk: false });
     send(res, 200, { ok: true });
     return;
   }
