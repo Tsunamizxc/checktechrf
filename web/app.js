@@ -67,14 +67,23 @@ const forms = {
     ],
   },
   epts: {
-    title: "Проверка ЭПТС и РНИС",
-    lead: "Укажите VIN для ЭПТС и/или госномер для РНИС. После оплаты через Т-Банк результат откроется в кабинете и придёт в чат.",
+    title: "Проверка ЭПТС",
+    lead: "Укажите VIN или номер ЭПТС. После оплаты через Т-Банк результат откроется в кабинете и придёт в чат.",
     submit: "Оставить заявку",
     fields: [
       ["name", "Имя", "text", false],
       ["phone", "Телефон", "tel", true],
-      ["vin", "VIN", "text", false],
-      ["plate", "Госномер", "text", false],
+      ["vin", "VIN или номер ЭПТС", "text", true],
+    ],
+  },
+  rnis: {
+    title: "Проверка РНИС",
+    lead: "Укажите госномер. После оплаты через Т-Банк покажем статус регистрации в РНИС.",
+    submit: "Оставить заявку",
+    fields: [
+      ["name", "Имя", "text", false],
+      ["phone", "Телефон", "tel", true],
+      ["plate", "Госномер", "text", true],
     ],
   },
   mkad: {
@@ -749,17 +758,19 @@ function showDublikat(catalog) {
 }
 
 function showPaidCheck(catalog, serviceId) {
-  const price = serviceId === "mkad" ? catalog.mkadPrice || 300 : catalog.eptsPrice || 300;
+  const priceByService = {
+    epts: catalog.eptsPrice || 300,
+    rnis: catalog.rnisPrice || 300,
+    mkad: catalog.mkadPrice || 300,
+  };
+  const price = priceByService[serviceId] || 300;
   const spec = forms[serviceId];
   const status = el("div", { class: "stack" });
-  const fields =
-    serviceId === "mkad"
-      ? [field(["plate", "Госномер", "text", true]), catalog.admin ? null : field(["email", "Email для чека", "email", true])]
-      : [
-          field(["vin", "VIN для ЭПТС", "text", false]),
-          field(["plate", "Госномер для РНИС", "text", false]),
-          catalog.admin ? null : field(["email", "Email для чека", "email", true]),
-        ];
+  const input =
+    serviceId === "epts"
+      ? field(["vin", "VIN или номер ЭПТС", "text", true])
+      : field(["plate", "Госномер", "text", true]);
+  const fields = [input, catalog.admin ? null : field(["email", "Email для чека", "email", true])];
   const submit = el("button", {
     class: "primary",
     type: "submit",
@@ -773,8 +784,12 @@ function showPaidCheck(catalog, serviceId) {
       return;
     }
     const data = formValues(form);
-    if (serviceId === "epts" && !data.vin && !data.plate) {
-      status.replaceChildren(banner("bad", "Укажите VIN для ЭПТС или госномер для РНИС."));
+    if (serviceId === "epts" && !data.vin) {
+      status.replaceChildren(banner("bad", "Укажите VIN или номер ЭПТС."));
+      return;
+    }
+    if ((serviceId === "rnis" || serviceId === "mkad") && !data.plate) {
+      status.replaceChildren(banner("bad", "Укажите госномер."));
       return;
     }
     status.replaceChildren();
@@ -845,7 +860,7 @@ function showService(catalog, serviceId) {
   if (serviceId === "osago") return showOsago(catalog);
   if (serviceId === "tehosmotr") return showTehosmotr(catalog);
   if (serviceId === "check") return showCheck(catalog);
-  if (serviceId === "epts" || serviceId === "mkad") return showPaidCheck(catalog, serviceId);
+  if (serviceId === "epts" || serviceId === "rnis" || serviceId === "mkad") return showPaidCheck(catalog, serviceId);
   if (serviceId === "dublikat") return showDublikat(catalog);
   if (serviceId === "dkp") return showDkp(catalog);
   return showLead(serviceId);
@@ -866,7 +881,7 @@ async function refreshOrder(orderId, status, button) {
   try {
     const order = await api(`/api/order/${orderId}/sync`, {});
     if (order.status === "paid" || order.status === "sent") {
-      if ((order.service === "epts" || order.service === "mkad") && !order.report?.length) {
+      if ((order.service === "epts" || order.service === "rnis" || order.service === "mkad") && !order.report?.length) {
         status.replaceChildren(el("p", { class: "note", text: "Оплата прошла. Ждём результат проверки…" }));
         setTimeout(() => refreshOrder(orderId, status, button), 2500);
         return;
@@ -921,7 +936,7 @@ function showResult(order, fromCabinet) {
   if (order.dkPdf) {
     blocks.push(el("a", { class: "primary", href: `/api/order/${order.id}/dk-pdf`, text: "Скачать дубликат PDF" }));
   }
-  if ((order.service === "epts" || order.service === "mkad") && order.status === "paid" && !order.report?.length) {
+  if ((order.service === "epts" || order.service === "rnis" || order.service === "mkad") && order.status === "paid" && !order.report?.length) {
     const wait = el("div", { class: "stack" }, [el("p", { class: "note", text: "Результат ещё готовится." })]);
     const again = el("button", { class: "ghost", type: "button", text: "Обновить результат" });
     again.addEventListener("click", () => refreshOrder(order.id, wait, again));

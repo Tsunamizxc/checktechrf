@@ -114,7 +114,7 @@ function present(order) {
   };
   if (order.status === "pending" && order.paymentUrl) view.paymentUrl = order.paymentUrl;
   if (order.status === "paid" && order.service === "check") view.cards = order.cards || [];
-  if (order.status === "paid" && (order.service === "epts" || order.service === "mkad")) {
+  if (order.status === "paid" && (order.service === "epts" || order.service === "rnis" || order.service === "mkad")) {
     view.report = order.report || [];
     view.message = order.fulfilled
       ? order.summary || "Результат проверки готов."
@@ -144,7 +144,8 @@ function present(order) {
 async function rememberPaid(order) {
   const title = {
     check: "Проверка техосмотра оплачена.",
-    epts: "Проверка ЭПТС и РНИС оплачена. Результат готовится.",
+    epts: "Проверка ЭПТС оплачена. Результат готовится.",
+    rnis: "Проверка РНИС оплачена. Результат готовится.",
     mkad: "Пропуск МКАД оплачен. Результат готовится.",
     dkp: "Договор оплачен. PDF отправлен клиенту.",
     dublikat: "Дубликат ДК оплачен. PDF готовится и придёт клиенту на email.",
@@ -213,7 +214,8 @@ function leadText(service, fields) {
     kasko: "КАСКО",
     osago: "ОСАГО",
     check: "Проверка техосмотра",
-    epts: "Проверка ЭПТС и РНИС",
+    epts: "Проверка ЭПТС",
+    rnis: "Проверка РНИС",
     mkad: "Пропуск МКАД",
     dkp: "ДКП",
     dublikat: "Дубликат ДК",
@@ -279,7 +281,7 @@ function operationQuery(order) {
   if (order.service === "site") {
     return fields["Телефон"] || fields["VIN"] || fields["Госномер"] || fields["Город"] || fields["Имя"] || "";
   }
-  if (order.service === "check" || order.service === "epts" || order.service === "mkad") {
+  if (order.service === "check" || order.service === "epts" || order.service === "rnis" || order.service === "mkad") {
     return order.query || [order.vin, order.plate].filter(Boolean).join(" / ") || "";
   }
   if (order.service === "dublikat") return order.dkNumber || "";
@@ -300,7 +302,7 @@ function operationResult(order) {
   if (order.service === "dublikat" && order.status === "paid") {
     return order.fulfilled ? "PDF дубликата готов и отправлен в чат." : "PDF готовится и придёт в чат.";
   }
-  if ((order.service === "epts" || order.service === "mkad") && order.status === "paid") {
+  if ((order.service === "epts" || order.service === "rnis" || order.service === "mkad") && order.status === "paid") {
     return order.fulfilled
       ? order.summary || "Результат проверки готов."
       : "Проверка выполняется. Результат появится через минуту.";
@@ -312,7 +314,8 @@ function operationResult(order) {
 
 const SERVICE_TITLES = {
   check: "Проверка техосмотра",
-  epts: "Проверка ЭПТС и РНИС",
+  epts: "Проверка ЭПТС",
+  rnis: "Проверка РНИС",
   mkad: "Пропуск МКАД",
   dkp: "Договор купли-продажи",
   dublikat: "Дубликат ДК",
@@ -487,7 +490,14 @@ async function handleApi(req, res, url) {
     const admin = isAdminUser(actor(req));
     if (admin) {
       for (const service of data.services) {
-        if (service.id === "check" || service.id === "dublikat" || service.id === "dkp" || service.id === "epts" || service.id === "mkad") {
+        if (
+          service.id === "check" ||
+          service.id === "dublikat" ||
+          service.id === "dkp" ||
+          service.id === "epts" ||
+          service.id === "rnis" ||
+          service.id === "mkad"
+        ) {
           service.priceLabel = "бесплатно";
         }
       }
@@ -743,7 +753,7 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/lead") {
     const body = await readBody(req);
-    const allowed = ["kasko", "osago", "check", "dkp", "dublikat", "tehosmotr", "epts", "mkad"];
+    const allowed = ["kasko", "osago", "check", "dkp", "dublikat", "tehosmotr", "epts", "rnis", "mkad"];
     const service = allowed.includes(body.service) ? body.service : "kasko";
     const fields = {
       name: clip(body.name, 150),
@@ -780,11 +790,11 @@ async function handleApi(req, res, url) {
       send(res, 400, { error: "Укажите VIN или госномер." });
       return;
     }
-    if (service === "epts" && !fields.vin && !fields.plate) {
-      send(res, 400, { error: "Укажите VIN или госномер." });
+    if (service === "epts" && fields.vin.length < 8) {
+      send(res, 400, { error: "Укажите VIN или номер ЭПТС." });
       return;
     }
-    if (service === "mkad" && fields.plate.length < 6) {
+    if ((service === "rnis" || service === "mkad") && fields.plate.length < 6) {
       send(res, 400, { error: "Укажите госномер." });
       return;
     }
@@ -1007,7 +1017,7 @@ async function handleApi(req, res, url) {
         return;
       }
 
-      if (body.service === "epts" || body.service === "mkad") {
+      if (body.service === "epts" || body.service === "rnis" || body.service === "mkad") {
         const admin = isAdminUser(user);
         const email = clip(body.email, 120).replace(/\s+/g, "");
         const vin = clip(body.vin, 32).replace(/\s+/g, "").toUpperCase();
@@ -1020,35 +1030,40 @@ async function handleApi(req, res, url) {
           send(res, 400, { error: "Укажите корректный email." });
           return;
         }
-        if (body.service === "epts" && !vin && !plate) {
-          send(res, 400, { error: "Укажите VIN для ЭПТС или госномер для РНИС." });
+        if (body.service === "epts" && vin.length < 8) {
+          send(res, 400, { error: "Укажите VIN или номер ЭПТС." });
           return;
         }
-        if (body.service === "mkad" && plate.length < 6) {
-          send(res, 400, { error: "Укажите госномер для проверки пропуска." });
+        if ((body.service === "rnis" || body.service === "mkad") && plate.length < 6) {
+          send(res, 400, { error: "Укажите госномер." });
           return;
         }
+        const amountByService = {
+          epts: prices.eptsPrice,
+          rnis: prices.rnisPrice,
+          mkad: prices.mkadPrice,
+        };
+        const payTitle = {
+          epts: "Проверка ЭПТС",
+          rnis: "Проверка РНИС",
+          mkad: "Проверка пропуска МКАД",
+        };
         const order = {
           id: id("tg"),
           service: body.service,
           status: "pending",
-          amount: body.service === "mkad" ? prices.mkadPrice : prices.eptsPrice,
+          amount: amountByService[body.service],
           email,
-          vin,
-          plate,
-          query: [vin, plate].filter(Boolean).join(" / "),
+          vin: body.service === "epts" ? vin : "",
+          plate: body.service === "epts" ? "" : plate,
+          query: body.service === "epts" ? vin : plate,
           report: [],
           chatId: user?.id || null,
           username: clip(user?.username, 64).replace(/^@/, ""),
           createdAt: Date.now(),
         };
         if (admin) grantFree(order);
-        else {
-          await createPayment(
-            order,
-            body.service === "mkad" ? "Проверка пропуска МКАД" : "Проверка ЭПТС и РНИС"
-          );
-        }
+        else await createPayment(order, payTitle[body.service]);
         await update((data) => {
           prune(data);
           data.orders[order.id] = order;
