@@ -228,24 +228,28 @@ function openExternal(url) {
   else window.open(url, "_blank", "noopener");
 }
 
+const CONTACT_PHONE = "8 (952) 207-84-32";
+const CONTACT_EMAIL = "proverkatexosmotra@yandex.ru";
+const CONTACT_SITE = "https://проверка-техосмотра.рф";
+
 function contactsFooter() {
-  const siteUrl = String(catalogCache?.siteUrl || "https://проверка-техосмотра.рф/").replace(/\/$/, "") || "https://проверка-техосмотра.рф";
-  const phone = el("a", { class: "contact-link", href: "tel:+79522078432", text: "8 (952) 207-84-32" });
+  const siteUrl = String(catalogCache?.siteUrl || CONTACT_SITE).replace(/\/$/, "") || CONTACT_SITE;
+  const phone = el("a", { class: "contact-link", href: "tel:+79522078432", text: CONTACT_PHONE });
   phone.addEventListener("click", (event) => {
     if (!tg?.openLink) return;
     event.preventDefault();
     tg.openLink("tel:+79522078432");
   });
-  const messenger = el("a", { class: "contact-link", href: "https://t.me/+79522078432", text: "8 (952) 207-84-32" });
+  const messenger = el("a", { class: "contact-link", href: "https://t.me/+79522078432", text: CONTACT_PHONE });
   messenger.addEventListener("click", (event) => {
     event.preventDefault();
     openExternal("https://t.me/+79522078432");
   });
-  const mail = el("a", { class: "contact-link", href: "mailto:proverkatexosmotra@yandex.ru", text: "proverkatexosmotra@yandex.ru" });
+  const mail = el("a", { class: "contact-link", href: `mailto:${CONTACT_EMAIL}`, text: CONTACT_EMAIL });
   mail.addEventListener("click", (event) => {
     if (!tg?.openLink) return;
     event.preventDefault();
-    tg.openLink("mailto:proverkatexosmotra@yandex.ru");
+    tg.openLink(`mailto:${CONTACT_EMAIL}`);
   });
   const site = el("a", { class: "contact-link", href: siteUrl, text: "проверка-техосмотра.рф" });
   site.addEventListener("click", (event) => {
@@ -253,7 +257,7 @@ function contactsFooter() {
     openExternal(siteUrl);
   });
   return el("footer", { class: "contacts" }, [
-    el("strong", { text: "Контакты" }),
+    el("strong", { text: "Контакты для связи" }),
     el("p", {}, ["Телефон: ", phone]),
     el("p", {}, ["WhatsApp / Telegram: ", messenger]),
     el("p", {}, ["Email: ", mail]),
@@ -280,7 +284,10 @@ function shell(content, withBack, wide) {
     back.addEventListener("click", goServices);
     nodes.push(back);
   }
-  nodes.push(content, contactsFooter());
+  nodes.push(content);
+  if (!(content instanceof Element && content.querySelector(".contacts"))) {
+    nodes.push(contactsFooter());
+  }
   app.replaceChildren(...nodes);
 }
 
@@ -882,8 +889,8 @@ async function refreshOrder(orderId, status, button) {
     const order = await api(`/api/order/${orderId}/sync`, {});
     if (order.status === "paid" || order.status === "sent") {
       if ((order.service === "epts" || order.service === "rnis" || order.service === "mkad") && !order.report?.length) {
-        status.replaceChildren(el("p", { class: "note", text: "Оплата прошла. Ждём результат проверки…" }));
-        setTimeout(() => refreshOrder(orderId, status, button), 2500);
+        showResult(order);
+        setTimeout(() => refreshOrder(orderId, null, null), 2500);
         return;
       }
       showResult(order);
@@ -949,7 +956,7 @@ function showResult(order, fromCabinet) {
   }
   const back = el("button", { class: "primary", type: "button", text: fromCabinet ? "В кабинет" : "К услугам" });
   back.addEventListener("click", () => (fromCabinet ? showCabinet() : goServices()));
-  blocks.push(back);
+  blocks.push(back, contactsFooter());
   shell(el("section", { class: "sheet panel" }, blocks), true);
 }
 
