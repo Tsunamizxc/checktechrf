@@ -66,6 +66,27 @@ const forms = {
       ["query", "VIN или госномер", "text", true],
     ],
   },
+  epts: {
+    title: "Проверка ЭПТС и РНИС",
+    lead: "Укажите VIN для ЭПТС и/или госномер для РНИС. После оплаты через Т-Банк результат откроется в кабинете и придёт в чат.",
+    submit: "Оставить заявку",
+    fields: [
+      ["name", "Имя", "text", false],
+      ["phone", "Телефон", "tel", true],
+      ["vin", "VIN", "text", false],
+      ["plate", "Госномер", "text", false],
+    ],
+  },
+  mkad: {
+    title: "Пропуск МКАД",
+    lead: "Укажите госномер. После оплаты через Т-Банк покажем действующие пропуска.",
+    submit: "Оставить заявку",
+    fields: [
+      ["name", "Имя", "text", false],
+      ["phone", "Телефон", "tel", true],
+      ["plate", "Госномер", "text", true],
+    ],
+  },
   dkp: {
     title: "Договор купли-продажи",
     lead: "Заполните данные, оплатите через Т-Банк — PDF договора можно скачать и он придёт в чат бота.",
@@ -296,6 +317,7 @@ function showAdminResult(order) {
     blocks.push(el("div", { class: "card-list" }, String(order.summary).split("\n").filter(Boolean).map((line) => el("p", { text: line }))));
   }
   if (order.cards?.length) blocks.push(el("div", { class: "card-list" }, order.cards.map(cardView)));
+  if (order.report?.length) blocks.push(reportView(order.report));
   if (order.contract) {
     blocks.push(el("iframe", { class: "frame", title: "Договор", src: `/api/order/${order.id}/contract` }));
   }
@@ -683,6 +705,66 @@ function showDublikat(catalog) {
   );
 }
 
+function showPaidCheck(catalog, serviceId) {
+  const price = serviceId === "mkad" ? catalog.mkadPrice || 300 : catalog.eptsPrice || 300;
+  const spec = forms[serviceId];
+  const status = el("div", { class: "stack" });
+  const fields =
+    serviceId === "mkad"
+      ? [field(["plate", "Госномер", "text", true]), catalog.admin ? null : field(["email", "Email для чека", "email", true])]
+      : [
+          field(["vin", "VIN для ЭПТС", "text", false]),
+          field(["plate", "Госномер для РНИС", "text", false]),
+          catalog.admin ? null : field(["email", "Email для чека", "email", true]),
+        ];
+  const submit = el("button", {
+    class: "primary",
+    type: "submit",
+    text: catalog.admin ? "Проверить бесплатно" : `Оплатить ${price} ₽ и проверить`,
+  });
+  const form = el("form", {}, [...fields.filter(Boolean), submit, status]);
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!catalog.admin && !catalog.payment) {
+      status.replaceChildren(banner("bad", "Оплата через Т-Банк сейчас не настроена."));
+      return;
+    }
+    const data = formValues(form);
+    if (serviceId === "epts" && !data.vin && !data.plate) {
+      status.replaceChildren(banner("bad", "Укажите VIN для ЭПТС или госномер для РНИС."));
+      return;
+    }
+    status.replaceChildren();
+    submit.disabled = true;
+    try {
+      const order = await api("/api/pay", {
+        service: serviceId,
+        vin: data.vin,
+        plate: data.plate,
+        email: data.email,
+      });
+      if (order.paymentUrl) showPayment(order);
+      else showResult(order);
+    } catch (error) {
+      status.replaceChildren(banner("bad", error.message));
+      submit.disabled = false;
+    }
+  });
+  shell(
+    el("section", { class: "sheet panel" }, [
+      el("h1", { text: spec.title }),
+      el("p", {
+        class: "lead",
+        text: catalog.admin ? "Для администратора проверка бесплатная: результат появится сразу после запроса." : spec.lead,
+      }),
+      catalog.payment || catalog.admin ? null : banner("bad", "Оплата через Т-Банк сейчас не настроена. Можно оставить заявку."),
+      form,
+      leadFold(serviceId),
+    ]),
+    true
+  );
+}
+
 function showDkp(catalog) {
   if (catalog.admin) {
     forms.dkp.submit = "Сформировать PDF";
@@ -720,6 +802,7 @@ function showService(catalog, serviceId) {
   if (serviceId === "osago") return showOsago(catalog);
   if (serviceId === "tehosmotr") return showTehosmotr(catalog);
   if (serviceId === "check") return showCheck(catalog);
+  if (serviceId === "epts" || serviceId === "mkad") return showPaidCheck(catalog, serviceId);
   if (serviceId === "dublikat") return showDublikat(catalog);
   if (serviceId === "dkp") return showDkp(catalog);
   return showLead(serviceId);
@@ -740,6 +823,11 @@ async function refreshOrder(orderId, status, button) {
   try {
     const order = await api(`/api/order/${orderId}/sync`, {});
     if (order.status === "paid" || order.status === "sent") {
+      if ((order.service === "epts" || order.service === "mkad") && !order.report?.length) {
+        status.replaceChildren(el("p", { class: "note", text: "Оплата прошла. Ждём результат проверки…" }));
+        setTimeout(() => refreshOrder(orderId, status, button), 2500);
+        return;
+      }
       showResult(order);
       return;
     }
@@ -763,10 +851,24 @@ function cardView(card) {
   return el("article", {}, lines.map((line) => el("p", { text: line })));
 }
 
+function reportView(rows) {
+  return el(
+    "div",
+    { class: "card-list" },
+    (rows || []).map((row) =>
+      el("article", {}, [
+        el("strong", { text: row.label || "" }),
+        el("p", { text: row.value || "" }),
+      ])
+    )
+  );
+}
+
 function showResult(order, fromCabinet) {
   const blocks = [el("h1", { text: order.title || (order.status === "paid" ? "Готово" : "Заявка отправлена") })];
   if (order.message) blocks.push(el("p", { class: "lead", text: order.message }));
   if (order.cards?.length) blocks.push(el("div", { class: "card-list" }, order.cards.map(cardView)));
+  if (order.report?.length) blocks.push(reportView(order.report));
   if (order.contract) {
     blocks.push(el("iframe", { class: "frame", title: "Договор", src: `/api/order/${order.id}/contract` }));
   }
@@ -775,6 +877,12 @@ function showResult(order, fromCabinet) {
   }
   if (order.dkPdf) {
     blocks.push(el("a", { class: "primary", href: `/api/order/${order.id}/dk-pdf`, text: "Скачать дубликат PDF" }));
+  }
+  if ((order.service === "epts" || order.service === "mkad") && order.status === "paid" && !order.report?.length) {
+    const wait = el("div", { class: "stack" }, [el("p", { class: "note", text: "Результат ещё готовится." })]);
+    const again = el("button", { class: "ghost", type: "button", text: "Обновить результат" });
+    again.addEventListener("click", () => refreshOrder(order.id, wait, again));
+    blocks.push(wait, again);
   }
   if (fromCabinet && order.historyId) {
     const remove = el("button", { class: "ghost", type: "button", text: "Удалить из истории" });

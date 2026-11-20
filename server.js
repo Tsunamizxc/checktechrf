@@ -15,6 +15,7 @@ const { contractPdf } = require("./lib/pdf");
 const { scheduleFulfillment, pollDuplicates } = require("./lib/fulfill");
 const { rememberOperation, forgetOperation, listHistory, findHistory, userProfiles, recentEntries, findEntry } = require("./lib/history");
 const { confirmLogin, takeLogin } = require("./lib/site-login");
+const { fromBotOrder, fromSiteLead } = require("./lib/crm");
 
 const ROOT = path.join(__dirname, "web");
 const PORT = Number(process.env.PORT || 8791);
@@ -113,6 +114,14 @@ function present(order) {
   };
   if (order.status === "pending" && order.paymentUrl) view.paymentUrl = order.paymentUrl;
   if (order.status === "paid" && order.service === "check") view.cards = order.cards || [];
+  if (order.status === "paid" && (order.service === "epts" || order.service === "mkad")) {
+    view.report = order.report || [];
+    view.message = order.fulfilled
+      ? order.summary || "Результат проверки готов."
+      : order.free
+        ? "Проверка выполняется. Результат появится через минуту."
+        : "Оплата прошла. Проверка выполняется, результат появится через минуту.";
+  }
   if (order.status === "paid" && order.service === "dkp") {
     view.contract = true;
     view.pdf = true;
@@ -135,6 +144,8 @@ function present(order) {
 async function rememberPaid(order) {
   const title = {
     check: "Проверка техосмотра оплачена.",
+    epts: "Проверка ЭПТС и РНИС оплачена. Результат готовится.",
+    mkad: "Пропуск МКАД оплачен. Результат готовится.",
     dkp: "Договор оплачен. PDF отправлен клиенту.",
     dublikat: "Дубликат ДК оплачен. PDF готовится и придёт клиенту на email.",
   }[order.service] || "Оплата прошла.";
@@ -202,6 +213,8 @@ function leadText(service, fields) {
     kasko: "КАСКО",
     osago: "ОСАГО",
     check: "Проверка техосмотра",
+    epts: "Проверка ЭПТС и РНИС",
+    mkad: "Пропуск МКАД",
     dkp: "ДКП",
     dublikat: "Дубликат ДК",
     tehosmotr: "Запись на техосмотр",
@@ -229,6 +242,8 @@ function leadText(service, fields) {
     contract_date: "Дата договора",
     contract_place: "Место составления",
     dkNumber: "Номер ДК",
+    vin: "VIN",
+    plate: "Госномер",
     message: "Комментарий",
   };
   const lines = [`Заявка: ${names[service] || service}`];
@@ -264,7 +279,9 @@ function operationQuery(order) {
   if (order.service === "site") {
     return fields["Телефон"] || fields["VIN"] || fields["Госномер"] || fields["Город"] || fields["Имя"] || "";
   }
-  if (order.service === "check") return order.query || "";
+  if (order.service === "check" || order.service === "epts" || order.service === "mkad") {
+    return order.query || [order.vin, order.plate].filter(Boolean).join(" / ") || "";
+  }
   if (order.service === "dublikat") return order.dkNumber || "";
   if (order.service === "dkp") {
     return [fields.vehicle_make, fields.vehicle_model, fields.vehicle_vin].filter(Boolean).join(" ");
@@ -283,6 +300,11 @@ function operationResult(order) {
   if (order.service === "dublikat" && order.status === "paid") {
     return order.fulfilled ? "PDF дубликата готов и отправлен в чат." : "PDF готовится и придёт в чат.";
   }
+  if ((order.service === "epts" || order.service === "mkad") && order.status === "paid") {
+    return order.fulfilled
+      ? order.summary || "Результат проверки готов."
+      : "Проверка выполняется. Результат появится через минуту.";
+  }
   if (order.status === "pending") return "Ожидает оплаты. Результат откроется после неё.";
   if (order.status === "sent") return "Заявка отправлена.";
   return "";
@@ -290,6 +312,8 @@ function operationResult(order) {
 
 const SERVICE_TITLES = {
   check: "Проверка техосмотра",
+  epts: "Проверка ЭПТС и РНИС",
+  mkad: "Пропуск МКАД",
   dkp: "Договор купли-продажи",
   dublikat: "Дубликат ДК",
   kasko: "КАСКО",
@@ -463,7 +487,7 @@ async function handleApi(req, res, url) {
     const admin = isAdminUser(actor(req));
     if (admin) {
       for (const service of data.services) {
-        if (service.id === "check" || service.id === "dublikat" || service.id === "dkp") {
+        if (service.id === "check" || service.id === "dublikat" || service.id === "dkp" || service.id === "epts" || service.id === "mkad") {
           service.priceLabel = "бесплатно";
         }
       }
@@ -719,7 +743,7 @@ async function handleApi(req, res, url) {
 
   if (req.method === "POST" && url.pathname === "/api/lead") {
     const body = await readBody(req);
-    const allowed = ["kasko", "osago", "check", "dkp", "dublikat", "tehosmotr"];
+    const allowed = ["kasko", "osago", "check", "dkp", "dublikat", "tehosmotr", "epts", "mkad"];
     const service = allowed.includes(body.service) ? body.service : "kasko";
     const fields = {
       name: clip(body.name, 150),
@@ -744,6 +768,8 @@ async function handleApi(req, res, url) {
       contract_date: clip(body.contract_date, 10),
       contract_place: clip(body.contract_place, 150),
       dkNumber: clip(body.dkNumber, 20),
+      vin: clip(body.vin, 32),
+      plate: clip(body.plate, 16),
       message: clip(body.message, 500),
     };
     if (fields.phone.length < 6) {
@@ -752,6 +778,14 @@ async function handleApi(req, res, url) {
     }
     if (service === "check" && fields.query.length < 6) {
       send(res, 400, { error: "Укажите VIN или госномер." });
+      return;
+    }
+    if (service === "epts" && !fields.vin && !fields.plate) {
+      send(res, 400, { error: "Укажите VIN или госномер." });
+      return;
+    }
+    if (service === "mkad" && fields.plate.length < 6) {
+      send(res, 400, { error: "Укажите госномер." });
       return;
     }
     if (service !== "check" && service !== "dkp" && !fields.name) {
@@ -779,6 +813,7 @@ async function handleApi(req, res, url) {
       data.orders[order.id] = order;
     });
     await trackOrder(user, order);
+    await fromBotOrder(order, user);
     const from = user
       ? `Telegram: ${[user.name, user.username ? `@${user.username}` : "", user.id].filter(Boolean).join(" ")}`
       : "";
@@ -972,6 +1007,58 @@ async function handleApi(req, res, url) {
         return;
       }
 
+      if (body.service === "epts" || body.service === "mkad") {
+        const admin = isAdminUser(user);
+        const email = clip(body.email, 120).replace(/\s+/g, "");
+        const vin = clip(body.vin, 32).replace(/\s+/g, "").toUpperCase();
+        const plate = clip(body.plate || body.query, 16).replace(/\s+/g, "").toUpperCase();
+        if (!admin && !emailOk(email)) {
+          send(res, 400, { error: "Укажите email для чека." });
+          return;
+        }
+        if (email && !emailOk(email)) {
+          send(res, 400, { error: "Укажите корректный email." });
+          return;
+        }
+        if (body.service === "epts" && !vin && !plate) {
+          send(res, 400, { error: "Укажите VIN для ЭПТС или госномер для РНИС." });
+          return;
+        }
+        if (body.service === "mkad" && plate.length < 6) {
+          send(res, 400, { error: "Укажите госномер для проверки пропуска." });
+          return;
+        }
+        const order = {
+          id: id("tg"),
+          service: body.service,
+          status: "pending",
+          amount: body.service === "mkad" ? prices.mkadPrice : prices.eptsPrice,
+          email,
+          vin,
+          plate,
+          query: [vin, plate].filter(Boolean).join(" / "),
+          report: [],
+          chatId: user?.id || null,
+          username: clip(user?.username, 64).replace(/^@/, ""),
+          createdAt: Date.now(),
+        };
+        if (admin) grantFree(order);
+        else {
+          await createPayment(
+            order,
+            body.service === "mkad" ? "Проверка пропуска МКАД" : "Проверка ЭПТС и РНИС"
+          );
+        }
+        await update((data) => {
+          prune(data);
+          data.orders[order.id] = order;
+        });
+        await trackOrder(user, order);
+        if (admin) scheduleFulfillment(order);
+        send(res, 200, present(order));
+        return;
+      }
+
       send(res, 400, { error: "Эта услуга оформляется заявкой." });
     } catch (error) {
       fail(res, error);
@@ -1032,6 +1119,7 @@ async function handleApi(req, res, url) {
     await update((data) => {
       data.orders[order.id] = order;
     });
+    await fromSiteLead(order);
     const lines = [subject, "Источник: сайт"];
     for (const [label, value] of Object.entries(fields)) lines.push(`${label}: ${value}`);
     await deliver(lines.join("\n"), "Заявка с сайта", { mail: false, vk: false });
