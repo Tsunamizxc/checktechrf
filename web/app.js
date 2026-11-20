@@ -263,9 +263,24 @@ function messengerOrderBlock(title) {
   tgBtn.addEventListener("click", () => openExternal(CONTACT_LINKS.telegram));
   waBtn.addEventListener("click", () => openExternal(CONTACT_LINKS.whatsapp));
   return el("div", { class: "messenger-order" }, [
-    el("p", { class: "note", text: title || `Оформить · ${CONTACT_PHONE_SHORT}` }),
+    el("p", { class: "note", text: title || `Написать · ${CONTACT_PHONE_SHORT}` }),
     el("div", { class: "messenger-row" }, [maxBtn, tgBtn, waBtn]),
   ]);
+}
+
+function serviceMessenger(serviceId) {
+  const titles = {
+    mkad: `Оформить · ${CONTACT_PHONE_SHORT}`,
+    osago: `Написать для расчёта · ${CONTACT_PHONE_SHORT}`,
+    tehosmotr: `Записаться через мессенджер · ${CONTACT_PHONE_SHORT}`,
+    kasko: `Написать для расчёта · ${CONTACT_PHONE_SHORT}`,
+    check: `Написать · ${CONTACT_PHONE_SHORT}`,
+    epts: `Написать · ${CONTACT_PHONE_SHORT}`,
+    rnis: `Написать · ${CONTACT_PHONE_SHORT}`,
+    dublikat: `Написать · ${CONTACT_PHONE_SHORT}`,
+    dkp: `Написать · ${CONTACT_PHONE_SHORT}`,
+  };
+  return messengerOrderBlock(titles[serviceId] || `Написать · ${CONTACT_PHONE_SHORT}`);
 }
 
 function contactsCompact() {
@@ -532,7 +547,7 @@ function home(catalog) {
       return button;
     })
   );
-  const wrap = el("div", { class: "stack" }, [...nodes, list]);
+  const wrap = el("div", { class: "stack" }, [serviceMessenger("home"), ...nodes, list]);
   if (String(catalog.siteUrl || "").startsWith("https://")) {
     const link = el("a", { class: "site", href: catalog.siteUrl, text: "Открыть сайт" });
     link.addEventListener("click", (event) => {
@@ -587,7 +602,12 @@ function showLead(serviceId) {
     showResult(await sendLead(serviceId, data));
   });
   shell(
-    el("section", { class: "sheet panel" }, [el("h1", { text: spec.title }), el("p", { class: "lead", text: spec.lead }), form]),
+    el("section", { class: "sheet panel" }, [
+      el("h1", { text: spec.title }),
+      el("p", { class: "lead", text: spec.lead }),
+      serviceMessenger(serviceId),
+      form,
+    ]),
     true
   );
 }
@@ -637,7 +657,7 @@ function showOsago(catalog) {
     el("section", { class: "sheet panel" }, [
       el("h1", { text: "ОСАГО" }),
       el("p", { class: "lead", text: forms.osago.lead }),
-      messengerOrderBlock(`Написать для расчёта · ${CONTACT_PHONE_SHORT}`),
+      serviceMessenger("osago"),
       host,
       open,
       leadFold("osago"),
@@ -668,7 +688,7 @@ function showTehosmotr(catalog) {
     el("section", { class: "sheet panel" }, [
       el("h1", { text: "Запись на техосмотр" }),
       el("p", { class: "lead", text: forms.tehosmotr.lead }),
-      messengerOrderBlock(`Записаться через мессенджер · ${CONTACT_PHONE_SHORT}`),
+      serviceMessenger("tehosmotr"),
       host,
       open,
       leadFold("tehosmotr"),
@@ -751,6 +771,7 @@ function showCheck(catalog) {
     el("section", { class: "sheet panel" }, [
       el("h1", { text: "Проверка техосмотра" }),
       el("p", { class: "lead", text: catalog.admin ? "Для администратора проверка бесплатная: результат откроется сразу." : forms.check.lead }),
+      serviceMessenger("check"),
       catalog.payment || catalog.admin ? null : banner("bad", "Оплата через Т-Банк сейчас не настроена. Можно оставить заявку."),
       form,
       leadFold("check"),
@@ -796,6 +817,7 @@ function showDublikat(catalog) {
         class: "lead",
         text: catalog.admin ? "Для администратора дубликат готовится без оплаты и приходит в чат бота." : forms.dublikat.lead,
       }),
+      serviceMessenger("dublikat"),
       direct,
       leadFold("dublikat"),
     ]),
@@ -861,7 +883,7 @@ function showPaidCheck(catalog, serviceId) {
         class: "lead",
         text: catalog.admin ? "Для администратора проверка бесплатная: результат появится сразу после запроса." : spec.lead,
       }),
-      serviceId === "mkad" ? messengerOrderBlock(`Оформить · ${CONTACT_PHONE_SHORT}`) : null,
+      serviceMessenger(serviceId),
       catalog.payment || catalog.admin ? null : banner("bad", "Оплата через Т-Банк сейчас не настроена. Можно оставить заявку."),
       form,
       leadFold(serviceId),
@@ -896,6 +918,7 @@ function showDkp(catalog) {
     el("section", { class: "sheet panel" }, [
       el("h1", { text: forms.dkp.title }),
       el("p", { class: "lead", text: forms.dkp.lead }),
+      serviceMessenger("dkp"),
       catalog.admin || catalog.payment ? null : banner("bad", "Оплата не настроена: заявка уйдёт администратору без PDF."),
       form,
     ]),
