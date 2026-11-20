@@ -234,6 +234,29 @@ a.primary, a.ghost { display: block; text-align: center; }
   color: var(--blue);
 }
 
+.contacts-compact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.35rem;
+  margin: 0;
+  padding: 0.35rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.2;
+}
+
+.contacts-compact .dot {
+  color: rgba(74, 98, 122, 0.55);
+}
+
+.contacts-compact .contact-link {
+  font-weight: 600;
+}
+
 .contacts {
   display: grid;
   gap: 0.45rem;
@@ -259,6 +282,23 @@ a.primary, a.ghost { display: block; text-align: center; }
   color: var(--blue);
   text-decoration: none;
   word-break: break-word;
+}
+
+.messenger-order {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.messenger-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.messenger-btn {
+  margin: 0;
+  padding: 0.7rem 0.5rem;
+  text-align: center;
 }
 
 main.wide { width: min(48rem, calc(100% - 1rem)); }

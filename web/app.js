@@ -23,7 +23,7 @@ const forms = {
   },
   osago: {
     title: "ОСАГО",
-    lead: "Калькулятор сравнивает страховые. Если удобнее через менеджера — оставьте заявку.",
+    lead: "Для расчёта напишите нам 89522078432 или заполните форму онлайн.",
     submit: "Оставить заявку",
     fields: [
       ["name", "Имя", "text", true],
@@ -35,7 +35,7 @@ const forms = {
   },
   tehosmotr: {
     title: "Запись на техосмотр",
-    lead: "Выберите пункт в виджете. Если карта не открылась, оставьте заявку — администратор запишет вас.",
+    lead: "Также запишись через мессенджер 89522078432 и потом заполни форму онлайн.",
     submit: "Оставить заявку",
     fields: [
       ["name", "Имя", "text", true],
@@ -229,41 +229,78 @@ function openExternal(url) {
 }
 
 const CONTACT_PHONE = "8 (952) 207-84-32";
+const CONTACT_PHONE_SHORT = "89522078432";
+const CONTACT_TEL = "+79522078432";
 const CONTACT_EMAIL = "proverkatexosmotra@yandex.ru";
 const CONTACT_SITE = "https://проверка-техосмотра.рф";
+const CONTACT_LINKS = {
+  tel: `tel:${CONTACT_TEL}`,
+  telegram: `https://t.me/${CONTACT_TEL}`,
+  whatsapp: `https://wa.me/79522078432`,
+  max: "https://max.ru/",
+};
+
+function contactLink(href, text, className) {
+  const node = el("a", { class: className || "contact-link", href, text });
+  node.addEventListener("click", (event) => {
+    if (href.startsWith("tel:") || href.startsWith("mailto:")) {
+      if (!tg?.openLink) return;
+      event.preventDefault();
+      tg.openLink(href);
+      return;
+    }
+    event.preventDefault();
+    openExternal(href);
+  });
+  return node;
+}
+
+function messengerOrderBlock(title) {
+  const maxBtn = el("button", { class: "ghost messenger-btn", type: "button", text: "Max" });
+  const tgBtn = el("button", { class: "ghost messenger-btn", type: "button", text: "Telegram" });
+  const waBtn = el("button", { class: "ghost messenger-btn", type: "button", text: "WhatsApp" });
+  maxBtn.addEventListener("click", () => openExternal(CONTACT_LINKS.max));
+  tgBtn.addEventListener("click", () => openExternal(CONTACT_LINKS.telegram));
+  waBtn.addEventListener("click", () => openExternal(CONTACT_LINKS.whatsapp));
+  return el("div", { class: "messenger-order" }, [
+    el("p", { class: "note", text: title || `Оформить · ${CONTACT_PHONE_SHORT}` }),
+    el("div", { class: "messenger-row" }, [maxBtn, tgBtn, waBtn]),
+  ]);
+}
+
+function contactsCompact() {
+  return el("div", { class: "contacts-compact" }, [
+    contactLink(CONTACT_LINKS.tel, CONTACT_PHONE_SHORT),
+    el("span", { class: "dot", text: "·" }),
+    contactLink(CONTACT_LINKS.telegram, "TG"),
+    el("span", { class: "dot", text: "·" }),
+    contactLink(CONTACT_LINKS.whatsapp, "WA"),
+    el("span", { class: "dot", text: "·" }),
+    contactLink(CONTACT_LINKS.max, "Max"),
+    el("span", { class: "dot", text: "·" }),
+    contactLink(`mailto:${CONTACT_EMAIL}`, "email"),
+  ]);
+}
 
 function contactsFooter() {
   const siteUrl = String(catalogCache?.siteUrl || CONTACT_SITE).replace(/\/$/, "") || CONTACT_SITE;
-  const phone = el("a", { class: "contact-link", href: "tel:+79522078432", text: CONTACT_PHONE });
-  phone.addEventListener("click", (event) => {
-    if (!tg?.openLink) return;
-    event.preventDefault();
-    tg.openLink("tel:+79522078432");
-  });
-  const messenger = el("a", { class: "contact-link", href: "https://t.me/+79522078432", text: CONTACT_PHONE });
-  messenger.addEventListener("click", (event) => {
-    event.preventDefault();
-    openExternal("https://t.me/+79522078432");
-  });
-  const mail = el("a", { class: "contact-link", href: `mailto:${CONTACT_EMAIL}`, text: CONTACT_EMAIL });
-  mail.addEventListener("click", (event) => {
-    if (!tg?.openLink) return;
-    event.preventDefault();
-    tg.openLink(`mailto:${CONTACT_EMAIL}`);
-  });
-  const site = el("a", { class: "contact-link", href: siteUrl, text: "проверка-техосмотра.рф" });
-  site.addEventListener("click", (event) => {
-    event.preventDefault();
-    openExternal(siteUrl);
-  });
   return el("footer", { class: "contacts" }, [
     el("strong", { text: "Контакты для связи" }),
-    el("p", {}, ["Телефон: ", phone]),
-    el("p", {}, ["WhatsApp / Telegram: ", messenger]),
-    el("p", {}, ["Email: ", mail]),
+    el("p", {}, ["Телефон: ", contactLink(CONTACT_LINKS.tel, CONTACT_PHONE)]),
+    el("p", {}, [
+      "WhatsApp / Telegram / Max: ",
+      contactLink(CONTACT_LINKS.whatsapp, "WA"),
+      " · ",
+      contactLink(CONTACT_LINKS.telegram, "TG"),
+      " · ",
+      contactLink(CONTACT_LINKS.max, "Max"),
+      " · ",
+      contactLink(CONTACT_LINKS.tel, CONTACT_PHONE),
+    ]),
+    el("p", {}, ["Email: ", contactLink(`mailto:${CONTACT_EMAIL}`, CONTACT_EMAIL)]),
     el("p", {}, [
       "Сайт ",
-      site,
+      contactLink(siteUrl, "проверка-техосмотра.рф"),
       " — запись на техосмотр, ОСАГО и КАСКО, проверка и дубликат диагностической карты, договор купли-продажи, проверка ЭПТС, РНИС и пропуска МКАД. На сайте тот же личный кабинет и история операций.",
     ]),
   ]);
@@ -278,14 +315,14 @@ function shell(content, withBack, wide) {
       el("p", { text: userName ? `${userName}, выберите услугу` : "ОСАГО, КАСКО, дубликат, проверка и договор" }),
     ]),
   ]);
-  const nodes = [header];
+  const nodes = [header, contactsCompact()];
   if (withBack) {
     const back = el("button", { class: "back", type: "button", text: "Все услуги" });
     back.addEventListener("click", goServices);
     nodes.push(back);
   }
   nodes.push(content);
-  if (!(content instanceof Element && content.querySelector(".contacts"))) {
+  if (!(content instanceof Element && content.querySelector("footer.contacts"))) {
     nodes.push(contactsFooter());
   }
   app.replaceChildren(...nodes);
@@ -600,6 +637,7 @@ function showOsago(catalog) {
     el("section", { class: "sheet panel" }, [
       el("h1", { text: "ОСАГО" }),
       el("p", { class: "lead", text: forms.osago.lead }),
+      messengerOrderBlock(`Написать для расчёта · ${CONTACT_PHONE_SHORT}`),
       host,
       open,
       leadFold("osago"),
@@ -630,6 +668,7 @@ function showTehosmotr(catalog) {
     el("section", { class: "sheet panel" }, [
       el("h1", { text: "Запись на техосмотр" }),
       el("p", { class: "lead", text: forms.tehosmotr.lead }),
+      messengerOrderBlock(`Записаться через мессенджер · ${CONTACT_PHONE_SHORT}`),
       host,
       open,
       leadFold("tehosmotr"),
@@ -822,6 +861,7 @@ function showPaidCheck(catalog, serviceId) {
         class: "lead",
         text: catalog.admin ? "Для администратора проверка бесплатная: результат появится сразу после запроса." : spec.lead,
       }),
+      serviceId === "mkad" ? messengerOrderBlock(`Оформить · ${CONTACT_PHONE_SHORT}`) : null,
       catalog.payment || catalog.admin ? null : banner("bad", "Оплата через Т-Банк сейчас не настроена. Можно оставить заявку."),
       form,
       leadFold(serviceId),
