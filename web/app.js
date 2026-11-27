@@ -827,9 +827,9 @@ function showDublikat(catalog) {
 
 function showPaidCheck(catalog, serviceId) {
   const priceByService = {
-    epts: catalog.eptsPrice || 300,
-    rnis: catalog.rnisPrice || 300,
-    mkad: catalog.mkadPrice || 300,
+    epts: catalog.eptsPrice || 150,
+    rnis: catalog.rnisPrice || 100,
+    mkad: catalog.mkadPrice || 100,
   };
   const price = priceByService[serviceId] || 300;
   const spec = forms[serviceId];
